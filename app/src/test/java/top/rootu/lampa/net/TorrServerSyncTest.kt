@@ -53,4 +53,28 @@ class TorrServerSyncTest {
         assertEquals(3 to 4, PlayerStateManager.inferSeasonAndEpisode("Show 3x04 [1080p]", null))
         assertEquals(null to null, PlayerStateManager.inferSeasonAndEpisode("Inception (2010) 4K UHD", "http://127.0.0.1:8090/stream/Inception.mkv"))
     }
+
+    @Test
+    fun `injectBasicAuthUrl embeds userInfo from TorrServer settings or Authorization header and matches original URL`() {
+        top.rootu.lampa.AndroidJS.torrserverAuth = true
+        top.rootu.lampa.AndroidJS.torrserverLogin = "torruser"
+        top.rootu.lampa.AndroidJS.torrserverPassword = "secret"
+        try {
+            val rawUrl = "http://192.168.1.50:8090/stream/Episode.S01E03.mkv?link=0123456789abcdef0123456789abcdef01234567&index=3&play"
+            val injectedUrl = TorrServerSync.injectBasicAuthUrl(rawUrl)
+            assertEquals(
+                "http://torruser:secret@192.168.1.50:8090/stream/Episode.S01E03.mkv?link=0123456789abcdef0123456789abcdef01234567&index=3&play",
+                injectedUrl
+            )
+            // Must still match original URL when player returns the authenticated URL
+            assertTrue(TorrServerSync.isSameStreamUrl(rawUrl, injectedUrl))
+            // extractRef must strip user:pass@ from baseUrl
+            val ref = TorrServerSync.extractRef(injectedUrl)
+            assertEquals("http://192.168.1.50:8090", ref?.baseUrl)
+        } finally {
+            top.rootu.lampa.AndroidJS.torrserverAuth = false
+            top.rootu.lampa.AndroidJS.torrserverLogin = ""
+            top.rootu.lampa.AndroidJS.torrserverPassword = ""
+        }
+    }
 }

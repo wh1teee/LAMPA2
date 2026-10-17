@@ -82,6 +82,7 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
 
             override fun onPageFinished(view: WebView, url: String) {
                 super.onPageFinished(view, url)
+                injectPerformanceAndPrefetchScript(view)
                 mainActivity.onBrowserPageFinished(view, url)
             }
 
@@ -345,6 +346,96 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
 
     override fun getView(): View? {
         return browser
+    }
+
+    private fun injectPerformanceAndPrefetchScript(view: WebView) {
+        val js = """
+            (function() {
+                if (window.__lampaNativePerfBoost) return;
+                window.__lampaNativePerfBoost = true;
+                try {
+                    var style = document.createElement('style');
+                    style.id = 'lampa-native-gpu-style';
+                    style.textContent = [
+                        '.card, .card__view, .items-line, .scroll__body, .full-start__background, .torrents-item {',
+                        '  will-change: transform;',
+                        '  backface-visibility: hidden;',
+                        '  -webkit-backface-visibility: hidden;',
+                        '  transform: translateZ(0);',
+                        '}',
+                        '.card.focus .card__view {',
+                        '  transition: transform 0.16s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.16s ease-out !important;',
+                        '}'
+                    ].join('\n');
+                    if (document.head) document.head.appendChild(style);
+
+                    var markImagesAsync = function(root) {
+                        if (!root || !root.querySelectorAll) return;
+                        var imgs = root.querySelectorAll('img:not([decoding])');
+                        for (var i = 0; i < imgs.length; i++) {
+                            imgs[i].setAttribute('decoding', 'async');
+                        }
+                    };
+                    markImagesAsync(document);
+
+                    var hoverTimer = null;
+                    var streamHoverTimer = null;
+                    var preloadedBackdrops = {};
+
+                    var triggerFocusPrefetch = function(el) {
+                        if (!el) return;
+                        clearTimeout(hoverTimer);
+                        clearTimeout(streamHoverTimer);
+                        hoverTimer = setTimeout(function() {
+                            try {
+                                var bg = el.getAttribute('data-backdrop') || el.getAttribute('data-bg') || (el.dataset && (el.dataset.backdrop || el.dataset.bg));
+                                if (bg && !preloadedBackdrops[bg]) {
+                                    preloadedBackdrops[bg] = true;
+                                    var img = new Image();
+                                    img.decoding = 'async';
+                                    img.src = bg;
+                                }
+                            } catch (e) {}
+                        }, 300);
+
+                        streamHoverTimer = setTimeout(function() {
+                            try {
+                                var streamUrl = el.getAttribute('data-stream') || el.getAttribute('data-url') || el.getAttribute('data-file') || (el.dataset && (el.dataset.stream || el.dataset.url || el.dataset.file));
+                                if (streamUrl && (streamUrl.indexOf('/stream/') !== -1 || streamUrl.indexOf('/play') !== -1 || streamUrl.indexOf('magnet:') === 0) && window.AndroidJS && window.AndroidJS.prefetchHint) {
+                                    window.AndroidJS.prefetchHint(streamUrl);
+                                }
+                            } catch (e) {}
+                        }, 450);
+                    };
+
+                    if (window.MutationObserver && document.body) {
+                        var obs = new MutationObserver(function(mutations) {
+                            for (var i = 0; i < mutations.length; i++) {
+                                var m = mutations[i];
+                                if (m.type === 'attributes' && m.attributeName === 'class') {
+                                    var target = m.target;
+                                    if (target && target.classList && target.classList.contains('focus')) {
+                                        triggerFocusPrefetch(target);
+                                    }
+                                } else if (m.type === 'childList' && m.addedNodes && m.addedNodes.length) {
+                                    for (var j = 0; j < m.addedNodes.length; j++) {
+                                        var node = m.addedNodes[j];
+                                        if (node && node.nodeType === 1) markImagesAsync(node);
+                                    }
+                                }
+                            }
+                        });
+                        obs.observe(document.body, {
+                            childList: true,
+                            subtree: true,
+                            attributes: true,
+                            attributeFilter: ['class']
+                        });
+                    }
+                } catch (err) {}
+            })();
+        """.trimIndent()
+        view.evaluateJavascript(js, null)
     }
 
     private fun createErrorHtmlPage(
