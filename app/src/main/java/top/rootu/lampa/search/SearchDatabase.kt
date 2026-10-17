@@ -4,6 +4,10 @@ import android.app.SearchManager
 import android.database.Cursor
 import android.database.MatrixCursor
 import android.media.Rating
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.runBlocking
 import top.rootu.lampa.App
 import top.rootu.lampa.R
 import top.rootu.lampa.helpers.Helpers.getDefaultPosterUri
@@ -11,7 +15,6 @@ import top.rootu.lampa.helpers.capitalizeFirstLetter
 import top.rootu.lampa.tmdb.TMDB
 import top.rootu.lampa.tmdb.models.entity.Entity
 import java.io.IOException
-import kotlin.concurrent.thread
 
 object SearchDatabase {
     // Search suggestion column names
@@ -33,24 +36,20 @@ object SearchDatabase {
     var KEY_ACTION = SearchManager.SUGGEST_COLUMN_INTENT_ACTION
 
     /**
-     * Searches TMDB for movies and TV shows matching the query.
+     * Searches TMDB for movies and TV shows matching the query using structured concurrency.
      *
      * @param query The search query.
      * @return A list of [Entity] objects representing the search results.
      */
     fun search(query: String): List<Entity> {
-        val results = mutableListOf<Entity>()
-
-        // Search in parallel for movies and TV shows across multiple pages
-        val threads = listOf(
-            thread { results.addAll(searchTMDB(query, 1, true)) }, // Movies, page 1
-            thread { results.addAll(searchTMDB(query, 2, true)) }, // Movies, page 2
-            thread { results.addAll(searchTMDB(query, 1, false)) }, // TV shows, page 1
-            thread { results.addAll(searchTMDB(query, 2, false)) }  // TV shows, page 2
-        )
-
-        // Wait for all threads to complete
-        threads.forEach { it.join() }
+        val results = runBlocking(Dispatchers.IO) {
+            listOf(
+                async { searchTMDB(query, 1, true) },  // Movies, page 1
+                async { searchTMDB(query, 2, true) },  // Movies, page 2
+                async { searchTMDB(query, 1, false) }, // TV shows, page 1
+                async { searchTMDB(query, 2, false) }  // TV shows, page 2
+            ).awaitAll().flatten().toMutableList()
+        }
 
         // Sort results by relevance and year
         results.sortWith(

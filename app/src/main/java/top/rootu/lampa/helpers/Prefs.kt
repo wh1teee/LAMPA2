@@ -278,7 +278,7 @@ object Prefs {
         newItems: List<T>
     ) {
         val updatedList = (currentList + newItems).distinct()
-        defPrefs.edit { putString(key, Gson().toJson(updatedList)) }
+        defPrefs.edit { putString(key, Helpers.gson.toJson(updatedList)) }
     }
 
     // Extension functions for adding items to specific preference lists
@@ -376,7 +376,7 @@ object Prefs {
     // Helper function to parse URL history from JSON
     private fun parseUrlHistory(json: String?): List<InputHistory> {
         return try {
-            Gson().fromJson(json, Array<InputHistory>::class.java)?.toList() ?: emptyList()
+            Helpers.gson.fromJson(json, Array<InputHistory>::class.java)?.toList() ?: emptyList()
         } catch (_: Exception) {
             emptyList() // Return an empty list if parsing fails
         }
@@ -384,7 +384,7 @@ object Prefs {
 
     // Helper function to save URL history to SharedPreferences
     private fun Context.saveUrlHistory(history: List<InputHistory>) {
-        val json = Gson().toJson(history)
+        val json = Helpers.gson.toJson(history)
         defPrefs.edit {
             putString(APP_URL_HISTORY, json)
         }

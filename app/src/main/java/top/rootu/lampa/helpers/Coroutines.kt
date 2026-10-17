@@ -4,68 +4,71 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 
 object Coroutines {
+    private val lock = Any()
     private val scopeList = hashMapOf<String, Pair<Job, CoroutineScope>>()
     private val jobList = hashMapOf<String, MutableList<Job>>()
 
-    private fun getScope(name: String, dispatcher: CoroutineDispatcher = Dispatchers.IO): CoroutineScope {
-        synchronized(scopeList) {
-            val scope = scopeList.get(name)
-            scope?.let { return it.second }
-        }
+    private fun getScopeLocked(
+        name: String,
+        dispatcher: CoroutineDispatcher = Dispatchers.IO
+    ): CoroutineScope {
+        scopeList[name]?.let { return it.second }
 
-        val job = Job()
-        val sc = CoroutineScope(dispatcher + job)
-        synchronized(scopeList) { scopeList[name] = Pair(job, sc) }
+        val job = SupervisorJob()
+        val scope = CoroutineScope(dispatcher + job)
+        scopeList[name] = Pair(job, scope)
         jobList[name] = mutableListOf()
-        return sc
+        return scope
     }
 
     fun running(name: String): Boolean {
-        //Log.d("*****", "joblist[$name]: ${jobList[name]}")
-        var active = false
-        val jobList = jobList[name]
-        jobList?.forEach { job ->
-            active = job.isActive
+        synchronized(lock) {
+            val jobs = jobList[name] ?: return false
+            jobs.removeAll { !it.isActive }
+            return jobs.isNotEmpty()
         }
-        return active
     }
 
     fun launch(name: String, fn: suspend () -> Unit) {
-        synchronized(scopeList) {
-            val scope = getScope(name)
-            val jb = scope.launch { fn() }
-            jobList[name]?.add(jb)
+        synchronized(lock) {
+            val scope = getScopeLocked(name)
+            val jobs = jobList.getOrPut(name) { mutableListOf() }
+            jobs.removeAll { !it.isActive }
+            val job = scope.launch { fn() }
+            jobs.add(job)
         }
     }
 
     fun remove(name: String) {
-        cancel(name)
-        synchronized(scopeList) {
+        synchronized(lock) {
+            scopeList[name]?.first?.cancelChildren()
+            jobList.remove(name)
             scopeList.remove(name)
         }
     }
 
     fun cancel(name: String) {
-        synchronized(scopeList) {
-            val scope = scopeList.get(name)
-            scope?.let {
-                it.first.cancelChildren()
-                jobList[name]?.clear()
-            }
+        synchronized(lock) {
+            scopeList[name]?.first?.cancelChildren()
+            jobList[name]?.clear()
         }
     }
 
     fun join(name: String) {
-        runBlocking {
-            //TODO may be crash
-            jobList[name]?.joinAll()
+        val jobsSnapshot = synchronized(lock) {
+            jobList[name]?.filter { it.isActive }?.toList().orEmpty()
+        }
+        if (jobsSnapshot.isNotEmpty()) {
+            runBlocking {
+                jobsSnapshot.joinAll()
+            }
         }
     }
-
 }

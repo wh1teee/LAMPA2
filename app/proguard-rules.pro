@@ -1,31 +1,36 @@
-# Add project specific ProGuard rules here.
-# You can control the set of applied configuration files using the
-# proguardFiles setting in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
+# Preserve source file and line numbers for readable crash reports in CrashActivity
+-keepattributes SourceFile,LineNumberTable
+-keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
-
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
-
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+# Keep WebView JavascriptInterface methods in AndroidJS
 -keepclassmembers class top.rootu.lampa.AndroidJS {
-   public *;
+    @android.webkit.JavascriptInterface <methods>;
+    public *;
 }
--keep class kotlin.** { *; }
--keep class kotlin.collections.** { *; }
--keep class kotlin.ranges.** { *; }
--keep class kotlin.sequences.** { *; }
--keep class kotlin.text.** { *; }
+
+# Keep Gson serialized models and data classes
+-keep class top.rootu.lampa.models.** { *; }
+-keep class top.rootu.lampa.tmdb.models.** { *; }
+-keep class top.rootu.lampa.PlayerStateManager$* { *; }
+-keep class top.rootu.lampa.helpers.Prefs$InputHistory { *; }
+-keepclassmembers class * {
+    @com.google.gson.annotations.SerializedName <fields>;
+}
+
+# Keep Rhino PAC script parser static helper methods invoked via reflection from JS scope
+-keep class com.btr.proxy.selector.pac.** { *; }
+-keep class org.mozilla.javascript.** { *; }
+-dontwarn org.mozilla.javascript.**
+-dontwarn java.beans.**
+-dontwarn java.lang.management.**
+
+# Keep custom View constructors inflated from XML
+-keepclassmembers class * extends android.view.View {
+    public <init>(android.content.Context);
+    public <init>(android.content.Context, android.util.AttributeSet);
+    public <init>(android.content.Context, android.util.AttributeSet, int);
+}
+
+# Desugared / Java 8+ library warnings
 -keep class j$.util.** { *; }
 -dontwarn j$.util.**
