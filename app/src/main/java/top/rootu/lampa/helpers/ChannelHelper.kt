@@ -46,35 +46,38 @@ object ChannelHelper {
      * @param displayName The display name of the channel.
      */
     fun add(name: String, displayName: String) {
-        val channel = get(name)
-        if (channel != null)
-            return
-        if (BuildConfig.DEBUG) Log.d("ChannelHelper", "add(name: $name, displayName: $displayName)")
-        val builder = Channel.Builder()
-        builder.setType(TvContractCompat.Channels.TYPE_PREVIEW)
-            .setDisplayName(displayName)
-            .setInternalProviderData(name)
-            .setAppLinkIntentUri(Uri.parse("lampa://${BuildConfig.APPLICATION_ID}/update_channel/$name"))
+        try {
+            val channel = get(name)
+            if (channel != null)
+                return
+            if (BuildConfig.DEBUG) Log.d("ChannelHelper", "add(name: $name, displayName: $displayName)")
+            val builder = Channel.Builder()
+            builder.setType(TvContractCompat.Channels.TYPE_PREVIEW)
+                .setDisplayName(displayName)
+                .setInternalProviderData(name)
+                .setAppLinkIntentUri(Uri.parse("lampa://${BuildConfig.APPLICATION_ID}/update_channel/$name"))
 
-        val channelUri = App.context.contentResolver.insert(
-            TvContractCompat.Channels.CONTENT_URI,
-            builder.build().toContentValues()
-        )
-        val channelId = channelUri?.let { ContentUris.parseId(it) }
+            val channelUri = App.context.contentResolver.insert(
+                TvContractCompat.Channels.CONTENT_URI,
+                builder.build().toContentValues()
+            )
+            val channelId = channelUri?.let { ContentUris.parseId(it) }
 
-        // channel images
-        val icon = when (name) {
-            BOOK -> R.drawable.ch_book_shape
-            HIST -> R.drawable.ch_hist_shape
-            LIKE -> R.drawable.ch_like_shape
-            else -> R.drawable.lampa_logo_round
-        }
-        // val themedContext = ContextThemeWrapper(App.context, R.style.Theme_LAMPA)
-        val bitmap = convertToBitmap(context = App.context, icon)
+            // channel images
+            val icon = when (name) {
+                BOOK -> R.drawable.ch_book_shape
+                HIST -> R.drawable.ch_hist_shape
+                LIKE -> R.drawable.ch_like_shape
+                else -> R.drawable.lampa_logo_round
+            }
+            val bitmap = convertToBitmap(context = App.context, icon)
 
-        if (channelId != null) {
-            ChannelLogoUtils.storeChannelLogo(App.context, channelId, bitmap)
-            TvContractCompat.requestChannelBrowsable(App.context, channelId)
+            if (channelId != null) {
+                ChannelLogoUtils.storeChannelLogo(App.context, channelId, bitmap)
+                TvContractCompat.requestChannelBrowsable(App.context, channelId)
+            }
+        } catch (e: Exception) {
+            Log.w("ChannelHelper", "Failed to add channel $name: ${e.message}")
         }
     }
 
@@ -85,24 +88,29 @@ object ChannelHelper {
      * @return The [Channel] object, or `null` if not found.
      */
     fun get(name: String): Channel? {
-        val cursor = App.context.contentResolver.query(
-            TvContractCompat.Channels.CONTENT_URI,
-            CHANNELS_PROJECTION,
-            null,
-            null,
-            null
-        )
+        return try {
+            val cursor = App.context.contentResolver.query(
+                TvContractCompat.Channels.CONTENT_URI,
+                CHANNELS_PROJECTION,
+                null,
+                null,
+                null
+            )
 
-        cursor?.use {
-            if (it.moveToFirst())
-                do {
-                    val channel = Channel.fromCursor(it)
-                    if (name == channel.data) {
-                        return channel
-                    }
-                } while (it.moveToNext())
+            cursor?.use {
+                if (it.moveToFirst())
+                    do {
+                        val channel = Channel.fromCursor(it)
+                        if (name == channel.data) {
+                            return channel
+                        }
+                    } while (it.moveToNext())
+            }
+            null
+        } catch (e: Exception) {
+            Log.w("ChannelHelper", "Failed to query channel $name: ${e.message}")
+            null
         }
-        return null
     }
 
     /**
@@ -111,7 +119,11 @@ object ChannelHelper {
      * @param channel The [Channel] to remove.
      */
     fun rem(channel: Channel) {
-        App.context.contentResolver.delete(TvContractCompat.buildChannelUri(channel.id), null, null)
+        try {
+            App.context.contentResolver.delete(TvContractCompat.buildChannelUri(channel.id), null, null)
+        } catch (e: Exception) {
+            Log.w("ChannelHelper", "Failed to remove channel ${channel.id}: ${e.message}")
+        }
     }
 
     /**
@@ -121,43 +133,51 @@ object ChannelHelper {
      */
     fun list(): List<Channel> {
         val ch = mutableListOf<Channel>()
+        try {
+            val cursor = App.context.contentResolver.query(
+                TvContractCompat.Channels.CONTENT_URI,
+                CHANNELS_PROJECTION,
+                null,
+                null,
+                null
+            )
 
-        val cursor = App.context.contentResolver.query(
-            TvContractCompat.Channels.CONTENT_URI,
-            CHANNELS_PROJECTION,
-            null,
-            null,
-            null
-        )
-
-        cursor?.use {
-            if (it.moveToFirst())
-                do {
-                    val channel = Channel.fromCursor(it)
-                    ch.add(channel)
-                } while (it.moveToNext())
+            cursor?.use {
+                if (it.moveToFirst())
+                    do {
+                        val channel = Channel.fromCursor(it)
+                        ch.add(channel)
+                    } while (it.moveToNext())
+            }
+        } catch (e: Exception) {
+            Log.w("ChannelHelper", "Failed to list channels: ${e.message}")
         }
         return ch
     }
 
     fun getChanByID(channelId: Long): String? {
-        val cursor = App.context.contentResolver.query(
-            TvContractCompat.Channels.CONTENT_URI,
-            CHANNELS_PROJECTION,
-            null,
-            null,
+        return try {
+            val cursor = App.context.contentResolver.query(
+                TvContractCompat.Channels.CONTENT_URI,
+                CHANNELS_PROJECTION,
+                null,
+                null,
+                null
+            )
+            cursor?.use {
+                if (it.moveToFirst())
+                    do {
+                        val channel = Channel.fromCursor(it)
+                        if (channelId == channel.id) {
+                            return channel.data
+                        }
+                    } while (it.moveToNext())
+            }
             null
-        )
-        cursor?.use {
-            if (it.moveToFirst())
-                do {
-                    val channel = Channel.fromCursor(it)
-                    if (channelId == channel.id) {
-                        return channel.data
-                    }
-                } while (it.moveToNext())
+        } catch (e: Exception) {
+            Log.w("ChannelHelper", "Failed to getChanByID $channelId: ${e.message}")
+            null
         }
-        return null
     }
 
     /**

@@ -110,6 +110,8 @@ import top.rootu.lampa.helpers.Prefs.lookToRemove
 import top.rootu.lampa.helpers.Prefs.migrate
 import top.rootu.lampa.helpers.Prefs.schdToRemove
 import top.rootu.lampa.helpers.Prefs.thrwToRemove
+import top.rootu.lampa.helpers.Prefs.tmdbApiUrl
+import top.rootu.lampa.helpers.Prefs.tmdbImgUrl
 import top.rootu.lampa.helpers.Prefs.tvPlayer
 import top.rootu.lampa.helpers.Prefs.urlHistory
 import top.rootu.lampa.helpers.Prefs.viewToRemove
@@ -181,6 +183,7 @@ class MainActivity : BaseActivity(),
         private const val DOMAIN_REGEX = "([-A-Za-z\\d]+\\.)+[-A-Za-z]{2,}"
         private const val URL_REGEX = "^https?://" + // Mandatory protocol
                 // "^(https?://)?" + // Protocol (http or https, optional)
+                "([-\\w.%+]+(:[-\\w.%+]+)?@)?" + // Optional user:pass@ credentials
                 "(\\[${IP6_REGEX}]|${IP4_REGEX}|${DOMAIN_REGEX})" +  // IPv6, IPv4, or domain
                 "(:\\d+)?" +                      // Optional port
                 "(/[-\\w@:%._+~#=&]*(/[-\\w@:%._+~#=&]*)*)?" + // Optional path (allows subpaths)
@@ -450,6 +453,7 @@ class MainActivity : BaseActivity(),
             addJavascriptInterface(AndroidJS(this@MainActivity, this), "AndroidJS")
         }
         logDebug("onBrowserInitCompleted LAMPA_URL: $LAMPA_URL")
+        HttpHelper.preconnectAsync(LAMPA_URL, tmdbApiUrl, tmdbImgUrl)
         if (LAMPA_URL.isEmpty()) {
             logDebug("onBrowserInitCompleted showUrlInputDialog")
             showUrlInputDialog()
@@ -468,7 +472,17 @@ class MainActivity : BaseActivity(),
         if (view.visibility != View.VISIBLE) {
             view.visibility = View.VISIBLE
         }
-        // Switch Loader (Note it control delayedVoidJsFunc)
+        // Smooth crossfade out for loaderView while marking it GONE immediately for delayedVoidJsFunc readiness
+        if (loaderView.visibility == View.VISIBLE) {
+            loaderView.animate()
+                .alpha(0f)
+                .setDuration(220L)
+                .withEndAction {
+                    loaderView.visibility = View.GONE
+                    loaderView.alpha = 1f
+                }
+                .start()
+        }
         loaderView.visibility = View.GONE
 
         Log.d(TAG, "LAMPA onLoadFinished $url")
@@ -478,8 +492,7 @@ class MainActivity : BaseActivity(),
         }
         // Hack to skip reload from Back history
         if (url.trimEnd('/').equals(LAMPA_URL, true)) {
-            // 1s delay after deep link to load content and after storage listener setup
-            val waitDelay = 1000L
+            val waitDelay = 350L
             // Lazy Load Intent
             processIntent(intent, waitDelay)
             lifecycleScope.launch {
@@ -498,6 +511,23 @@ class MainActivity : BaseActivity(),
                     delay(waitDelay.milliseconds)
                     Scheduler.scheduleUpdate(false) // false for one shot, true is onBoot
                 }
+            }
+        }
+    }
+
+    fun onCardActivityEntered(activityJson: String) {
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val obj = JSONObject(activityJson)
+                if (obj.optString("component") != "full") return@launch
+                val card = getCard(obj.optJSONObject("movie")) ?: return@launch
+                val state = playerStateManager.findStateByCard(card) ?: return@launch
+                val resumeUrl = state.currentItem?.url ?: return@launch
+                top.rootu.lampa.net.TorrServerSync.preloadEpisodeAsync(
+                    resumeUrl,
+                    getHeadersFromState(state)
+                )
+            } catch (_: Exception) {
             }
         }
     }
@@ -971,7 +1001,7 @@ class MainActivity : BaseActivity(),
         listenerMutex.withLock {
             cleanupListener()
             // Wait for cleanup to complete
-            delay(1000.milliseconds) // Ensure cleanup completes
+            delay(150.milliseconds) // Ensure cleanup completes
             // Verify cleanup
             browser?.evaluateJavascript(
                 """
@@ -1055,13 +1085,22 @@ class MainActivity : BaseActivity(),
     }
 
     private fun syncStorage() {
-        runJsStorageChangeField("activity", "{}") // get current lampaActivity
-        runJsStorageChangeField("player_timecode") // for player params
-        runJsStorageChangeField("playlist_next") // for player playlist
-        runJsStorageChangeField("source") // get current catalog for Recs
-        runJsStorageChangeField("account_use") // get bookmarks sync state
-        runJsStorageChangeField("recomends_list", "[]") // force update recs
-        runJsStorageChangeField("proxy_tmdb") // to get current baseUrlApiTMDB and baseUrlImageTMDB
+        runVoidJsFunc(
+            "AndroidJS.storageChangeBatch",
+            "JSON.stringify([" +
+                    "{name: 'activity', value: Lampa.Storage.get('activity', '{}')}," +
+                    "{name: 'player_timecode', value: Lampa.Storage.field('player_timecode')}," +
+                    "{name: 'playlist_next', value: Lampa.Storage.field('playlist_next')}," +
+                    "{name: 'source', value: Lampa.Storage.field('source')}," +
+                    "{name: 'account_use', value: Lampa.Storage.field('account_use')}," +
+                    "{name: 'recomends_list', value: Lampa.Storage.get('recomends_list', '[]')}," +
+                    "{name: 'proxy_tmdb', value: Lampa.Storage.field('proxy_tmdb')}," +
+                    "{name: 'torrserver_url', value: Lampa.Storage.get('torrserver_url', '')}," +
+                    "{name: 'torrserver_auth', value: Lampa.Storage.field('torrserver_auth')}," +
+                    "{name: 'torrserver_login', value: Lampa.Storage.get('torrserver_login', '')}," +
+                    "{name: 'torrserver_password', value: Lampa.Storage.get('torrserver_password', '')}" +
+                    "])"
+        )
     }
 
     fun getLampaTmdbUrls() {
@@ -1071,42 +1110,35 @@ class MainActivity : BaseActivity(),
                 (function() {
                     if(window.appready) {
                         console.log('Lampa ready, store baseUrlApiTMDB and baseUrlImageTMDB...');
-                        AndroidJS.storageChange(JSON.stringify({name: 'baseUrlApiTMDB', value: Lampa.TMDB.api('')}))
-                        AndroidJS.storageChange(JSON.stringify({name: 'baseUrlImageTMDB', value: Lampa.TMDB.image('')}))
+                        AndroidJS.storageChangeBatch(JSON.stringify([
+                            {name: 'baseUrlApiTMDB', value: Lampa.TMDB.api('')},
+                            {name: 'baseUrlImageTMDB', value: Lampa.TMDB.image('')}
+                        ]));
                     } else {
                         console.log('Lampa not ready, wait load...');
                         Lampa.Listener.follow('app', function (e) {
-                        if(e.type =='ready')
+                        if(e.type =='ready') {
                             console.log('Lampa ready, store baseUrlApiTMDB and baseUrlImageTMDB...');
-                            AndroidJS.storageChange(JSON.stringify({name: 'baseUrlApiTMDB', value: Lampa.TMDB.api('')}))
-                            AndroidJS.storageChange(JSON.stringify({name: 'baseUrlImageTMDB', value: Lampa.TMDB.image('')}))
+                            AndroidJS.storageChangeBatch(JSON.stringify([
+                                {name: 'baseUrlApiTMDB', value: Lampa.TMDB.api('')},
+                                {name: 'baseUrlImageTMDB', value: Lampa.TMDB.image('')}
+                            ]));
+                        }
                         })
                     }
                     return '${JS_SUCCESS} setup TMDB URLs';
                 })()
                 """.trimIndent()
             ) { result -> logDebug(result.removeSurrounding("\"")) }
-
-//            runVoidJsFunc(
-//                "AndroidJS.storageChange",
-//                "JSON.stringify({name: 'baseUrlApiTMDB', value: Lampa.TMDB.api('')})"
-//            )
-//            runVoidJsFunc(
-//                "AndroidJS.storageChange",
-//                "JSON.stringify({name: 'baseUrlImageTMDB', value: Lampa.TMDB.image('')})"
-//            )
         }
     }
 
     // Function to sync bookmarks (Required only for Android TV 8+)
-    // runVoidJsFunc("Lampa.Favorite.$action", "'$catgoryName', {id: $id}")
-    // runVoidJsFunc("Lampa.Favorite.add", "'wath', ${Gson().toJson(card)}")
     private suspend fun syncBookmarks() = withContext(Dispatchers.Default) {
         if (!isTvContentProviderAvailable) return@withContext
         withContext(Dispatchers.Main) {
             runVoidJsFunc("Lampa.Favorite.init", "") // Initialize if no favorite
         }
-        // logDebug("syncBookmarks() add to wath: ${App.context.wathToAdd}")
         App.context.wathToAdd.forEach { item ->
             val lampaCard = App.context.FAV?.card?.find { it.id == item.id } ?: item.card
             lampaCard?.let { card ->
@@ -1123,7 +1155,7 @@ class MainActivity : BaseActivity(),
                     }
                 }
             }
-            delay(500.milliseconds) // don't do it too fast
+            delay(60.milliseconds)
         }
         // Remove items from various categories
         listOf(
@@ -1137,12 +1169,11 @@ class MainActivity : BaseActivity(),
             LampaProvider.CONT to App.context.contToRemove,
             LampaProvider.THRW to App.context.thrwToRemove
         ).forEach { (category, items) ->
-            // logDebug("syncBookmarks() remove from $category: $items")
             items.forEach { id ->
                 withContext(Dispatchers.Main) {
                     runVoidJsFunc("Lampa.Favorite.remove", "'$category', {id: $id}")
                 }
-                delay(500.milliseconds) // don't do it too fast
+                delay(60.milliseconds)
             }
         }
         // don't do it again
@@ -1237,13 +1268,6 @@ class MainActivity : BaseActivity(),
                 "open_settings" -> showMenuDialog()
             }
         }
-        // Handle an external search query (e.g. from a voice assistant or a
-        // launcher): open LAMPA's own search screen prefilled with the query
-        // via the public Lampa.Search API. If a search screen is already open
-        // (a repeated external query), close it first — Lampa.Search.open() is
-        // not idempotent and would stack a new search over the previous one.
-        // runVoidJsFunc queues the call until the web app is ready, so a cold
-        // start is fine.
         intent.getStringExtra(SearchManager.QUERY)?.let { query ->
             if (query.isNotBlank()) {
                 val escaped = query.replace("\\", "\\\\").replace("'", "\\'")
@@ -1256,6 +1280,16 @@ class MainActivity : BaseActivity(),
                 runVoidJsFunc(opener, "'$escaped'")
             }
         }
+        // Clear one-shot deep-link extras so returning from external player or configuration change doesn't re-trigger
+        intent.removeExtra("id")
+        intent.removeExtra("media")
+        intent.removeExtra("source")
+        intent.removeExtra("continueWatch")
+        intent.removeExtra("lampaActivity")
+        intent.removeExtra("android.intent.extra.START_PLAYBACK")
+        intent.removeExtra("cmd")
+        intent.removeExtra(SearchManager.QUERY)
+        intent.data = null
         // Fix initial focus
         browser?.setFocus()
     }
@@ -2395,7 +2429,11 @@ class MainActivity : BaseActivity(),
         state: PlayerStateManager.PlaybackState,
     ): Intent? {
         state.currentItem?.let { currentItem ->
-            val safeUri = encodeUrlIfNeeded(currentItem.url).toUri()
+            val resolvedUrl = top.rootu.lampa.net.TorrServerSync.injectBasicAuthUrl(
+                currentItem.url,
+                getHeadersFromState(state)
+            )
+            val safeUri = encodeUrlIfNeeded(resolvedUrl).toUri()
             val intent = Intent(Intent.ACTION_VIEW).apply {
                 data = safeUri
                 setDataAndType(
@@ -2411,17 +2449,10 @@ class MainActivity : BaseActivity(),
     }
 
     private fun getAvailablePlayers(intent: Intent): List<ResolveInfo> {
-        return if (VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            packageManager.queryIntentActivities(intent, PackageManager.MATCH_ALL)
-                .filterNot { info ->
-                    info.activityInfo.packageName.lowercase() in PLAYERS_BLACKLIST
-                }
-        } else {
-            packageManager.queryIntentActivities(intent, 0) // PackageManager.MATCH_DEFAULT_ONLY
-                .filterNot { info ->
-                    info.activityInfo.packageName.lowercase() in PLAYERS_BLACKLIST
-                }
-        }
+        return packageManager.queryIntentActivities(intent, PackageManager.MATCH_ALL)
+            .filterNot { info ->
+                info.activityInfo.packageName.lowercase() in PLAYERS_BLACKLIST
+            }
     }
 
     private fun configurePlayerIntent(
@@ -2571,6 +2602,7 @@ class MainActivity : BaseActivity(),
     private fun prepareHeaders(jsonObject: JSONObject): Array<String>? {
         val headers = mutableListOf<String>()
         var hasHeaders = false
+        var hasAuthHeader = false
 
         // Process headers from JSON
         jsonObject.optJSONObject("headers")?.let { headersObj ->
@@ -2584,6 +2616,13 @@ class MainActivity : BaseActivity(),
                         headers.add(key)
                         headers.add(headersObj.optString(key))
                         hasCustomUserAgent = true
+                        hasHeaders = true
+                    }
+
+                    "authorization" -> {
+                        headers.add(key)
+                        headers.add(headersObj.optString(key))
+                        hasAuthHeader = true
                         hasHeaders = true
                     }
 
@@ -2607,6 +2646,15 @@ class MainActivity : BaseActivity(),
             headers.add("User-Agent")
             headers.add(it)
             hasHeaders = true
+        }
+
+        val videoUrl = jsonObject.optString("url")
+        if (!hasAuthHeader && top.rootu.lampa.net.TorrServerSync.isTorrServerUrl(videoUrl)) {
+            top.rootu.lampa.net.TorrServerSync.basicAuthHeaderValue()?.let { basicAuth ->
+                headers.add("Authorization")
+                headers.add(basicAuth)
+                hasHeaders = true
+            }
         }
 
         return if (hasHeaders) headers.toTypedArray() else null
@@ -2841,7 +2889,7 @@ class MainActivity : BaseActivity(),
                     ?.let { putString("episode_title", it) }
                 item.thumbnail?.takeIf { it.isNotEmpty() }?.let { putString("thumbnail", it) }
                 (item.imdbId ?: cardImdbId)?.let { putString("imdb_id", it) }
-                cardId?.let { putString("tmdb_id", it) }
+                (item.tmdbId ?: cardId)?.let { putString("tmdb_id", it) }
                 item.season?.let { putInt("season", it) }
                 item.episode?.let { putInt("episode", it) }
                 item.segments?.takeIf { it.isNotEmpty() }?.let { putString("segments", it) }
@@ -3086,8 +3134,12 @@ class MainActivity : BaseActivity(),
             }
             // Handle subtitles from state
             state.currentItem?.subtitles?.takeIf { it.isNotEmpty() }?.let { subs ->
-                // MPV can handle multiple subtitle tracks, ensure URLs are properly encoded
-                val subUris = subs.map { encodeUrlIfNeeded(it.url).toUri() }.toTypedArray()
+                // MPV can handle multiple subtitle tracks, ensure URLs are properly encoded and include TorrServer Basic Auth if needed
+                val subUris = subs.map {
+                    encodeUrlIfNeeded(
+                        top.rootu.lampa.net.TorrServerSync.injectBasicAuthUrl(it.url, headers)
+                    ).toUri()
+                }.toTypedArray()
                 putExtra("subs", subUris) // Parcelable[]
                 // Add language information if available
                 subs.mapNotNull { it.language }.takeIf { it.isNotEmpty() }?.let { langs ->
@@ -3431,7 +3483,8 @@ class MainActivity : BaseActivity(),
                 videoUrl,
                 positionMillis,
                 durationMillis,
-                ended
+                ended,
+                fallbackIndex = currentState.currentIndex
             ) ?: return@launch  // Exit if current item not found
 
             // Handle automatic marking of previous items as complete
@@ -3535,11 +3588,13 @@ class MainActivity : BaseActivity(),
         videoUrl: String,
         positionMillis: Int,
         durationMillis: Int,
-        ended: Boolean
+        ended: Boolean,
+        fallbackIndex: Int = -1
     ): Pair<MutableList<PlayerStateManager.PlaylistItem>, Int>? {
         val updatedPlaylist = playlist.toMutableList()
         val foundIndex =
             updatedPlaylist.indexOfFirst { isCurrentPlaybackItem(it, videoUrl) }.takeIf { it >= 0 }
+                ?: fallbackIndex.takeIf { it in updatedPlaylist.indices }
                 ?: return null
 
         updatedPlaylist[foundIndex] = createUpdatedPlaylistItem(

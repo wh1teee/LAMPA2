@@ -92,7 +92,7 @@ object AppAttestation {
                     .signingInfo
                     ?.apkContentsSigners
                     ?.firstOrNull()
-                    ?.toByteArray()
+                    ?.toByteArray() ?: return null
 
             val digest = MessageDigest.getInstance("SHA-256").digest(certBytes)
             formatSha256Hex(digest)
@@ -117,28 +117,6 @@ object AppAttestation {
         host.equals(apex, ignoreCase = true) ||
             host.endsWith(".$apex", ignoreCase = true)
 
-    // TorrServer swagger: play, stream, torrents, search (+ torznab search).
-    private val TORRSERVER_EXACT = setOf("/search", "/stream", "/torrents")
-    private val TORRSERVER_PREFIX = arrayOf("/play", "/stream", "/torznab/search")
-
-    // JacRed swagger: search only (Jackett, native, Prowlarr, Torznab).
-    private val JACRED_PREFIX = arrayOf(
-        "/api/v2.0/indexers",
-        "/api/v1.0/torrents",
-        "/api/v1/search",
-        "/torznab/api",
-    )
-
-    private fun isParserApiPath(path: String): Boolean {
-        val p = path.lowercase(Locale.ROOT).trimEnd('/')
-        if (p.isEmpty()) return false
-        if (p in TORRSERVER_EXACT) return true
-        return matchesPrefix(p, TORRSERVER_PREFIX) || matchesPrefix(p, JACRED_PREFIX)
-    }
-
-    private fun matchesPrefix(path: String, stems: Array<String>): Boolean =
-        stems.any { stem -> path == stem || path.startsWith("$stem/") }
-
     private fun parseHttpUri(url: String): URI? = try {
         val uri = URI(url.trim())
         if (uri.host.isNullOrEmpty()) null else uri
@@ -151,18 +129,7 @@ object AppAttestation {
         fun no(url: String) = check(!shouldInjectClientHeaders(url, "http://lampa.mx")) { url }
         yes("https://cub.best/api/plugins/all")
         yes("https://tmdb.cub.black/movie/1")
-        yes("https://jac.red/api/v2.0/indexers/all/results")
-        yes("https://jacred.xyz/api/v2.0/indexers/all/results")
         yes("http://lampa.mx/css/app.css")
-        yes("http://192.168.1.10:9117/api/v2.0/indexers/all/results")
-        yes("http://10.0.0.5:9696/api/v1/search")
-        yes("http://127.0.0.1:8090/search/")
-        yes("http://127.0.0.1:8090/torrents")
-        yes("http://127.0.0.1:8090/stream/file.mkv")
-        yes("http://127.0.0.1:8090/play/h/1")
-        yes("http://127.0.0.1:8090/torznab/search/?query=x")
-        yes("https://jac.red/api/v1.0/torrents")
-        yes("https://jac.red/torznab/api")
         no("https://fanserials.tv/")
         no("https://fanserials.tv/api/foo")
         no("https://rezka.ag/search/foo")

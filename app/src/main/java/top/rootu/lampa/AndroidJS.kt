@@ -12,6 +12,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -54,6 +55,8 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
     // Local properties
     private var lastEventHash: String? = null
     private val reqResponse = ConcurrentHashMap<String, String>()
+    private val pendingKeys = java.util.concurrent.ConcurrentLinkedQueue<String>()
+    private val inFlightGets = ConcurrentHashMap<String, kotlinx.coroutines.Deferred<JSONObject>>()
     private var keys: Array<String?>? = null
     private var values: Array<String?>? = null
     private var dumped = false
@@ -71,6 +74,20 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
         private const val TAG = "AndroidJS"
         private const val UPDATE_DELAY = 5000L // in ms, wait before update TV channel
         private const val MAX_PENDING_RESPONSES = 256
+        private val HTTP_METHODS = setOf("DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT")
+        private val TORRSERVER_PACKAGES = listOf("ru.yourok.torrserve", "ru.yourok.torrserve.atv")
+
+        @Volatile
+        var torrserverAuth: Boolean = false
+
+        @Volatile
+        var torrserverLogin: String = ""
+
+        @Volatile
+        var torrserverPassword: String = ""
+
+        @Volatile
+        var torrserverUrl: String = ""
     }
 
     private fun scheduleChannelUpdate(channelKey: String, block: suspend () -> Unit) {
@@ -93,134 +110,188 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
             val eo: JSONObject = if (json == "\"\"") {
                 JSONObject()
             } else {
-                JSONObject(json)
+                try {
+                    JSONObject(json)
+                } catch (_: Exception) {
+                    return
+                }
             }
-            if (!eo.has("name") || !eo.has("value")) return
+            applyStorageChange(eo)
+        }
+    }
 
-            when (eo.optString("name")) {
-                "activity" -> {
-                    MainActivity.lampaActivity = eo.optString("value", "{}")
-                    debugLog(TAG, "lampaActivity stored: ${MainActivity.lampaActivity}")
-                }
+    @JavascriptInterface
+    fun storageChangeBatch(jsonArrayStr: String?) {
+        if (jsonArrayStr.isNullOrBlank()) return
+        try {
+            val arr = org.json.JSONArray(jsonArrayStr)
+            for (i in 0 until arr.length()) {
+                val eo = arr.optJSONObject(i) ?: continue
+                applyStorageChange(eo)
+            }
+        } catch (e: Exception) {
+            debugLog(TAG, "storageChangeBatch failed: ${e.message}")
+        }
+    }
 
-                "player_timecode" -> {
-                    MainActivity.playerTimeCode = eo.optString("value", MainActivity.playerTimeCode)
-                    debugLog(TAG, "playerTimeCode stored: ${MainActivity.playerTimeCode}")
-                }
+    private fun applyStorageChange(eo: JSONObject) {
+        if (!eo.has("name") || !eo.has("value")) return
 
-                "playlist_next" -> {
-                    MainActivity.playerAutoNext = eo.optString("value", "true") == "true"
-                    debugLog(TAG, "playerAutoNext stored: ${MainActivity.playerAutoNext}")
-                }
+        when (eo.optString("name")) {
+            "activity" -> {
+                MainActivity.lampaActivity = eo.optString("value", "{}")
+                debugLog(TAG, "lampaActivity stored: ${MainActivity.lampaActivity}")
+                mainActivity.onCardActivityEntered(MainActivity.lampaActivity)
+            }
 
-                "language" -> {
-                    val newLang = eo.optString("value", "ru")
-                    if (newLang != "undefined" && mainActivity.appLang != newLang) {
-                        App.setAppLanguage(mainActivity, newLang)
-                        // mainActivity.appLang = newLang
-                        // mainActivity.runOnUiThread { mainActivity.recreate() }
-                        debugLog(TAG, "language changed to $newLang")
-                    } else {
-                        debugLog(TAG, "language not changed [${mainActivity.appLang}]")
-                    }
-                }
+            "player_timecode" -> {
+                MainActivity.playerTimeCode = eo.optString("value", MainActivity.playerTimeCode)
+                debugLog(TAG, "playerTimeCode stored: ${MainActivity.playerTimeCode}")
+            }
 
-                "source" -> {
-                    mainActivity.lampaSource = eo.optString("value", mainActivity.lampaSource)
-                    debugLog(TAG, "lampaSource stored: ${mainActivity.lampaSource}")
-                }
+            "playlist_next" -> {
+                MainActivity.playerAutoNext = eo.optString("value", "true") == "true"
+                debugLog(TAG, "playerAutoNext stored: ${MainActivity.playerAutoNext}")
+            }
 
-                "protocol" -> {
-                    if (MainActivity.proxyTmdbEnabled) {
-                        debugLog(TAG, "protocol changed. run getLampaTmdbUrls()")
-                        mainActivity.getLampaTmdbUrls()
-                    } else {
-                        debugLog(TAG, "protocol changed. TMDB Proxy disabled, nothing to do.")
-                    }
-                }
+            "torrserver_auth" -> {
+                torrserverAuth = eo.optString("value", "false").equals("true", ignoreCase = true) ||
+                        eo.optBoolean("value", false)
+                debugLog(TAG, "torrserverAuth stored: $torrserverAuth")
+            }
 
-                "proxy_tmdb" -> {
-                    val newState = eo.optString("value", "true") == "true"
-                    MainActivity.proxyTmdbEnabled = newState
-                    debugLog(TAG, "proxyTmdbEnabled set to $newState")
-                    if (MainActivity.proxyTmdbEnabled) {
-                        mainActivity.getLampaTmdbUrls()
-                    } else {
-                        // store defaults to prefs
-                        debugLog(TAG, "Apply default TMDB URLs")
-                        mainActivity.tmdbApiUrl = TMDB.APIURL
-                        mainActivity.tmdbImgUrl = TMDB.IMGURL
-                    }
-                }
+            "torrserver_login" -> {
+                val raw = eo.optString("value", "")
+                torrserverLogin = if (raw == "undefined" || raw == "null") "" else raw
+                debugLog(TAG, "torrserverLogin updated")
+            }
 
-                "baseUrlApiTMDB" -> {
-                    val newUrl = eo.optString("value", TMDB.APIURL)
-                    if (newUrl.startsWith("http", true) &&
-                        !newUrl.contains(mainActivity.tmdbApiUrl, true)
-                    ) {
-                        mainActivity.tmdbApiUrl = newUrl
-                        debugLog(
-                            TAG,
-                            "baseUrlApiTMDB changed, tmdbApiUrl ${mainActivity.tmdbApiUrl}"
-                        )
-                    } else {
-                        debugLog(
-                            TAG,
-                            "baseUrlApiTMDB changed, tmdbApiUrl not changed: ${mainActivity.tmdbApiUrl}"
-                        )
-                    }
-                }
+            "torrserver_password" -> {
+                val raw = eo.optString("value", "")
+                torrserverPassword = if (raw == "undefined" || raw == "null") "" else raw
+                debugLog(TAG, "torrserverPassword updated")
+            }
 
-                "baseUrlImageTMDB" -> {
-                    val newUrl = eo.optString("value", TMDB.IMGURL)
-                    if (newUrl.startsWith("http", true) &&
-                        !newUrl.contains(mainActivity.tmdbImgUrl, true)
-                    ) {
-                        mainActivity.tmdbImgUrl = newUrl
-                        debugLog(
-                            TAG,
-                            "baseUrlImageTMDB changed, tmdbImgUrl ${mainActivity.tmdbImgUrl}"
-                        )
-                    } else {
-                        debugLog(
-                            TAG,
-                            "baseUrlImageTMDB changed, tmdbImgUrl not changed: ${mainActivity.tmdbImgUrl}"
-                        )
-                    }
+            "torrserver_url" -> {
+                val raw = eo.optString("value", "")
+                torrserverUrl = if (raw == "undefined" || raw == "null") "" else raw
+                debugLog(TAG, "torrserverUrl stored: $torrserverUrl")
+                if (torrserverUrl.isNotEmpty()) {
+                    val withScheme = if (torrserverUrl.contains("://")) torrserverUrl else "http://$torrserverUrl"
+                    top.rootu.lampa.net.HttpHelper.preconnectAsync(withScheme)
                 }
+            }
 
-                "favorite" -> {
-                    val json = eo.optString("value", "")
-                    if (isValidJson(json)) {
-                        mainActivity.saveFavorite(json)
-                        debugLog(TAG, "favorite JSON saved to prefs")
-                    } else {
-                        Log.e(TAG, "Not valid JSON in favorite")
-                    }
+            "language" -> {
+                val newLang = eo.optString("value", "ru")
+                if (newLang != "undefined" && mainActivity.appLang != newLang) {
+                    App.setAppLanguage(mainActivity, newLang)
+                    debugLog(TAG, "language changed to $newLang")
+                } else {
+                    debugLog(TAG, "language not changed [${mainActivity.appLang}]")
                 }
+            }
 
-                "account_use" -> {
-                    val use = eo.optBoolean("value", false)
-                    debugLog(TAG, "set syncEnabled $use")
-                    mainActivity.syncEnabled = use
-                }
+            "source" -> {
+                mainActivity.lampaSource = eo.optString("value", mainActivity.lampaSource)
+                debugLog(TAG, "lampaSource stored: ${mainActivity.lampaSource}")
+            }
 
-                "recomends_list" -> {
-                    val json = eo.optString("value", "")
-                    if (isValidJson(json)) {
-                        mainActivity.saveRecs(json)
-                        debugLog(TAG, "recomends_list JSON saved to prefs")
-                    } else {
-                        Log.e(TAG, "Not valid JSON in recomends_list")
-                    }
+            "protocol" -> {
+                if (MainActivity.proxyTmdbEnabled) {
+                    debugLog(TAG, "protocol changed. run getLampaTmdbUrls()")
+                    mainActivity.getLampaTmdbUrls()
+                } else {
+                    debugLog(TAG, "protocol changed. TMDB Proxy disabled, nothing to do.")
                 }
+            }
 
-                else -> { // no op
+            "proxy_tmdb" -> {
+                val newState = eo.optString("value", "true") == "true"
+                MainActivity.proxyTmdbEnabled = newState
+                debugLog(TAG, "proxyTmdbEnabled set to $newState")
+                if (MainActivity.proxyTmdbEnabled) {
+                    mainActivity.getLampaTmdbUrls()
+                } else {
+                    debugLog(TAG, "Apply default TMDB URLs")
+                    mainActivity.tmdbApiUrl = TMDB.APIURL
+                    mainActivity.tmdbImgUrl = TMDB.IMGURL
                 }
+            }
+
+            "baseUrlApiTMDB" -> {
+                val newUrl = eo.optString("value", TMDB.APIURL)
+                if (newUrl.startsWith("http", true) &&
+                    !newUrl.contains(mainActivity.tmdbApiUrl, true)
+                ) {
+                    mainActivity.tmdbApiUrl = newUrl
+                    top.rootu.lampa.net.HttpHelper.preconnectAsync(newUrl)
+                    debugLog(
+                        TAG,
+                        "baseUrlApiTMDB changed, tmdbApiUrl ${mainActivity.tmdbApiUrl}"
+                    )
+                } else {
+                    debugLog(
+                        TAG,
+                        "baseUrlApiTMDB changed, tmdbApiUrl not changed: ${mainActivity.tmdbApiUrl}"
+                    )
+                }
+            }
+
+            "baseUrlImageTMDB" -> {
+                val newUrl = eo.optString("value", TMDB.IMGURL)
+                if (newUrl.startsWith("http", true) &&
+                    !newUrl.contains(mainActivity.tmdbImgUrl, true)
+                ) {
+                    mainActivity.tmdbImgUrl = newUrl
+                    top.rootu.lampa.net.HttpHelper.preconnectAsync(newUrl)
+                    debugLog(
+                        TAG,
+                        "baseUrlImageTMDB changed, tmdbImgUrl ${mainActivity.tmdbImgUrl}"
+                    )
+                } else {
+                    debugLog(
+                        TAG,
+                        "baseUrlImageTMDB changed, tmdbImgUrl not changed: ${mainActivity.tmdbImgUrl}"
+                    )
+                }
+            }
+
+            "favorite" -> {
+                val json = eo.optString("value", "")
+                if (isValidJson(json)) {
+                    mainActivity.saveFavorite(json)
+                    debugLog(TAG, "favorite JSON saved to prefs")
+                } else {
+                    Log.e(TAG, "Not valid JSON in favorite")
+                }
+            }
+
+            "account_use" -> {
+                val use = eo.optBoolean("value", false)
+                debugLog(TAG, "set syncEnabled $use")
+                mainActivity.syncEnabled = use
+            }
+
+            "recomends_list" -> {
+                val json = eo.optString("value", "")
+                if (isValidJson(json)) {
+                    mainActivity.saveRecs(json)
+                    debugLog(TAG, "recomends_list JSON saved to prefs")
+                } else {
+                    Log.e(TAG, "Not valid JSON in recomends_list")
+                }
+            }
+
+            else -> { // no op
             }
         }
     }
 
+    @JavascriptInterface
+    fun prefetchHint(url: String?) {
+        top.rootu.lampa.net.TorrServerSync.prefetchStreamHint(url)
+    }
 
     @JavascriptInterface
     fun appVersion(): String {
@@ -240,7 +311,24 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
     @Throws(JSONException::class)
     fun openTorrentLink(url: String, jsonString: String): Boolean {
         val jsonData = if (jsonString == "\"\"") JSONObject() else JSONObject(jsonString)
-        val intent = Intent(Intent.ACTION_VIEW).apply {
+        fun Intent.populateTorrentExtras(): Intent = apply {
+            jsonData.optString("title").takeIf { it.isNotEmpty() }?.let { title ->
+                putExtra("title", title)
+                putExtra("displayName", title)
+                putExtra("forcename", title)
+            }
+            jsonData.optString("poster").takeIf { it.isNotEmpty() }?.let { poster ->
+                putExtra("poster", poster)
+            }
+            jsonData.optString("media").takeIf { it.isNotEmpty() }?.let { category ->
+                putExtra("category", category)
+            }
+            jsonData.optJSONObject("data")?.let { dataObj ->
+                putExtra("data", dataObj.toString())
+            }
+        }
+
+        val primaryIntent = Intent(Intent.ACTION_VIEW).apply {
             if (url.startsWith("magnet", ignoreCase = true)) {
                 data = url.toUri()
             } else {
@@ -248,32 +336,37 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
             addCategory(Intent.CATEGORY_BROWSABLE)
-
-            jsonData.optString("title").takeIf { it.isNotEmpty() }?.let { title ->
-                putExtra("title", title)
-                putExtra("displayName", title)
-                putExtra("forcename", title)
-            }
-
-            jsonData.optString("poster").takeIf { it.isNotEmpty() }?.let { poster ->
-                putExtra("poster", poster)
-            }
-
-            jsonData.optString("media").takeIf { it.isNotEmpty() }?.let { category ->
-                putExtra("category", category)
-            }
-
-            jsonData.optJSONObject("data")?.let { dataObj ->
-                putExtra("data", dataObj.toString())
-            }
+            populateTorrentExtras()
         }
 
         mainActivity.runOnUiThread {
             try {
-                mainActivity.startActivity(intent)
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to open torrent link", e)
-                App.toast(R.string.no_torrent_activity_found, true)
+                mainActivity.startActivity(primaryIntent)
+            } catch (_: Exception) {
+                // Fallback for Android TV 14 (Issue #41) where TorrServer registers http/magnet
+                // without mimeType="application/x-bittorrent" or CATEGORY_BROWSABLE.
+                var launched = false
+                for (pkg in TORRSERVER_PACKAGES) {
+                    val pkgIntent = Intent(Intent.ACTION_VIEW, url.toUri()).apply {
+                        setPackage(pkg)
+                        populateTorrentExtras()
+                    }
+                    try {
+                        mainActivity.startActivity(pkgIntent)
+                        launched = true
+                        break
+                    } catch (_: Exception) {
+                    }
+                }
+                if (!launched) {
+                    try {
+                        val genericIntent = Intent(Intent.ACTION_VIEW, url.toUri()).populateTorrentExtras()
+                        mainActivity.startActivity(genericIntent)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to open torrent link", e)
+                        App.toast(R.string.no_torrent_activity_found, true)
+                    }
+                }
             }
         }
         // Force update Recs to filter viewed
@@ -332,22 +425,34 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
             val jsonObject = JSONObject(str)
             val disableH2 = jsonObject.optBoolean("disableH2", false)
 
-            // Extract all parameters upfront
-            val url = jsonObject.optString("url").takeIf { it.isNotEmpty() }
+            // Extract all parameters upfront and resolve relative URLs against MainActivity.LAMPA_URL
+            val rawUrl = jsonObject.optString("url").trim().takeIf { it.isNotEmpty() }
                 ?: throw IllegalArgumentException("URL cannot be empty")
+            val url = resolveRequestUrl(rawUrl, MainActivity.LAMPA_URL)
             val data = jsonObject.opt("post_data")
             val returnHeaders = jsonObject.optBoolean("returnHeaders", false)
             // Optional dataType: "base64" forces binary-safe response encoding.
             val dataType = jsonObject.optString("dataType").takeIf { it.isNotEmpty() }
             val timeout = jsonObject.optInt("timeout", 15000).coerceAtLeast(1000)
-            val headers = jsonObject.optJSONObject("headers")?.let {
-                JSONObject(it.toString()) // Create a copy to avoid modifying the original
-            } ?: JSONObject()
+            // "method" is the common name for the verb; "type" is the older jQuery-style one Lampa sends.
+            val requestedMethod = listOf("method", "type")
+                .map { jsonObject.optString(it).trim().uppercase(Locale.ROOT) }
+                .firstOrNull { it in HTTP_METHODS }
+                .orEmpty()
+
+            val headers = JSONObject()
+            jsonObject.optJSONObject("headers")?.let { src ->
+                val it = src.keys()
+                while (it.hasNext()) {
+                    val k = it.next()
+                    headers.putSafe(k, src.opt(k) ?: "")
+                }
+            }
 
             var contentType = jsonObject.optString("contentType")
             var requestContent = ""
 
-            if (data != null) {
+            if (data != null && data !== JSONObject.NULL) {
                 if (data is String) {
                     requestContent = data
                     contentType = try {
@@ -360,6 +465,9 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
                     contentType = "application/json"
                     requestContent = data.toString()
                 }
+            }
+            if (requestedMethod == "GET" || requestedMethod == "HEAD") {
+                requestContent = ""
             }
             // Ensure Content-Type header is properly set
             if (requestContent.isNotEmpty()) {
@@ -377,32 +485,46 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
             }
             injectLampaClientHeaders(url, headers)
             val finalRequestContent = requestContent
+            val method = requestedMethod.ifEmpty { if (finalRequestContent.isEmpty()) "GET" else "POST" }
             val finalHeaders = headers
             val reqKey = returnI.toString()
 
             mainActivity.lifecycleScope.launch(Dispatchers.IO) {
-                if (reqResponse.size > MAX_PENDING_RESPONSES) {
-                    reqResponse.clear()
+                while (reqResponse.size >= MAX_PENDING_RESPONSES) {
+                    val oldestKey = pendingKeys.poll() ?: break
+                    reqResponse.remove(oldestKey)
                 }
                 val http = Http(disableH2)
                 val result = try {
-                    val responseJSON = if (finalRequestContent.isEmpty()) {
-                        http.Get(url, finalHeaders, timeout, dataType)
+                    val responseJSON = if (method == "GET" && !disableH2) {
+                        val coalesceKey = "$url|${dataType.orEmpty()}|$finalHeaders"
+                        val deferred = inFlightGets.computeIfAbsent(coalesceKey) {
+                            channelScope.async(Dispatchers.IO) {
+                                http.Send(method, url, finalRequestContent, finalHeaders, timeout, dataType)
+                            }
+                        }
+                        try {
+                            deferred.await()
+                        } finally {
+                            inFlightGets.remove(coalesceKey, deferred)
+                        }
                     } else {
-                        http.Post(url, finalRequestContent, finalHeaders, timeout, dataType)
+                        http.Send(method, url, finalRequestContent, finalHeaders, timeout, dataType)
                     }
                     reqResponse[reqKey] = if (returnHeaders) {
                         responseJSON.toString()
                     } else {
                         responseJSON.optString("body", "")
                     }
+                    pendingKeys.offer(reqKey)
                     "complite"
-                } catch (e: Exception) {
+                } catch (e: Throwable) {
                     val errorJson = JSONObject().apply {
                         putSafe("status", http.lastErrorCode)
                         putSafe("message", "request error: ${e.message ?: "unknown error"}")
                     }
                     reqResponse[reqKey] = errorJson.toString()
+                    pendingKeys.offer(reqKey)
                     debugLog(TAG, "error: ${e.message ?: "unknown error"}")
                     "error"
                 }
@@ -416,13 +538,30 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
                     browser.evaluateJavascript(js) { debugLog(TAG, js) }
                 }
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             e.printStackTrace()
+        }
+    }
+
+    private fun resolveRequestUrl(rawUrl: String, baseUrl: String): String {
+        if (rawUrl.startsWith("http://", ignoreCase = true) || rawUrl.startsWith("https://", ignoreCase = true)) {
+            return rawUrl
+        }
+        val cleanBase = baseUrl.trim().trimEnd('/').ifEmpty { "http://lampa.mx" }
+        return when {
+            rawUrl.startsWith("//") -> {
+                val scheme = cleanBase.substringBefore("://", "http")
+                "$scheme:$rawUrl"
+            }
+            rawUrl.startsWith("./") -> "$cleanBase/${rawUrl.removePrefix("./")}"
+            rawUrl.startsWith("/") -> "$cleanBase$rawUrl"
+            else -> "$cleanBase/$rawUrl"
         }
     }
 
     @JavascriptInterface
     fun getResp(str: String): String {
+        pendingKeys.remove(str)
         return reqResponse.remove(str) ?: ""
     }
 
@@ -608,25 +747,28 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
     }
 
     private fun injectLampaClientHeaders(url: String, headers: JSONObject) {
-        if (!AppAttestation.shouldInjectClientHeaders(url, MainActivity.LAMPA_URL)) return
+        try {
+            if (!AppAttestation.shouldInjectClientHeaders(url, MainActivity.LAMPA_URL)) return
 
-        AppAttestation.buildClientHeaders(mainActivity).forEach { (key, value) ->
-            headers.putIfAbsentIgnoreCase(key, value)
+            AppAttestation.buildClientHeaders(mainActivity).forEach { (key, value) ->
+                headers.putIfAbsentIgnoreCase(key, value)
+            }
+
+            val referer = MainActivity.LAMPA_URL.trim().trimEnd('/')
+            if (referer.isNotEmpty()) {
+                headers.putIfAbsentIgnoreCase("Referer", referer)
+            }
+
+            debugLog(
+                TAG,
+                "httpReq injected client headers: " +
+                    "${AppAttestation.HEADER_CLIENT}=${AppAttestation.clientId()}, " +
+                    "${AppAttestation.HEADER_REPO}=${BuildConfig.REPO_ID}, " +
+                    "Referer=$referer, " +
+                    "${AppAttestation.HEADER_CERT_SHA256}=${AppAttestation.signingCertSha256(mainActivity)}"
+            )
+        } catch (_: Throwable) {
         }
-
-        val referer = MainActivity.LAMPA_URL.trim().trimEnd('/')
-        if (referer.isNotEmpty()) {
-            headers.putIfAbsentIgnoreCase("Referer", referer)
-        }
-
-        debugLog(
-            TAG,
-            "httpReq injected client headers: " +
-                "${AppAttestation.HEADER_CLIENT}=${AppAttestation.clientId()}, " +
-                "${AppAttestation.HEADER_REPO}=${BuildConfig.REPO_ID}, " +
-                "Referer=$referer, " +
-                "${AppAttestation.HEADER_CERT_SHA256}=${AppAttestation.signingCertSha256(mainActivity)}"
-        )
     }
 
     private fun JSONObject.putIfAbsentIgnoreCase(key: String, value: Any) {

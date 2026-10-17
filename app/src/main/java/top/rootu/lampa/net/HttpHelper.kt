@@ -1,5 +1,6 @@
 package top.rootu.lampa.net
 
+import kotlinx.coroutines.launch
 import okhttp3.Cache
 import okhttp3.ConnectionPool
 import okhttp3.ConnectionSpec
@@ -86,5 +87,40 @@ object HttpHelper {
                 proxySelector(proxySelector)
             }
         }.build()
+    }
+
+    private val preconnectScope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO
+    )
+    private val preconnectedHosts = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /**
+     * Asynchronously warms up DNS resolution and TCP/TLS connection pool for the given URLs
+     * so subsequent requests from Lampa WebView or native bridge experience zero handshake latency.
+     */
+    @JvmStatic
+    fun preconnectAsync(vararg urls: String?) {
+        for (raw in urls) {
+            val trimmed = raw?.trim()?.takeIf { it.startsWith("http", ignoreCase = true) } ?: continue
+            val origin = runCatching {
+                val u = java.net.URI(trimmed)
+                val scheme = u.scheme?.lowercase() ?: return@runCatching null
+                val host = u.host?.lowercase() ?: return@runCatching null
+                val port = if (u.port != -1) ":${u.port}" else ""
+                "$scheme://$host$port"
+            }.getOrNull() ?: continue
+
+            if (!preconnectedHosts.add(origin)) continue
+            preconnectScope.launch {
+                runCatching {
+                    val req = okhttp3.Request.Builder()
+                        .url(origin)
+                        .head()
+                        .header("User-Agent", userAgent)
+                        .build()
+                    client.newCall(req).execute().close()
+                }
+            }
+        }
     }
 }

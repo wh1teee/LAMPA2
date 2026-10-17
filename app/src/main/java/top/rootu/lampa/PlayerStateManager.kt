@@ -130,7 +130,8 @@ class PlayerStateManager(context: Context) {
         val segments: String? = null,
         val season: Int? = null,
         val episode: Int? = null,
-        val imdbId: String? = null
+        val imdbId: String? = null,
+        val tmdbId: String? = null
     ) {
         /**
          * Data class representing playback timeline information.
@@ -758,9 +759,13 @@ class PlayerStateManager(context: Context) {
             season = explicitSeason ?: inferredSeason,
             episode = explicitEpisode ?: inferredEpisode,
 
-            // IMDb id: a persisted flat field, else from the card (data.card.imdb_id) if present.
+            // IMDb id and TMDB id: a persisted flat field, else from the card (data.card.*) if present.
             imdbId = optString("imdb_id").takeIf { it.isNotEmpty() }
-                ?: optJSONObject("card")?.optString("imdb_id")?.takeIf { it.isNotEmpty() }
+                ?: optJSONObject("card")?.optString("imdb_id")?.takeIf { it.isNotEmpty() },
+            tmdbId = optString("tmdb_id").takeIf { it.isNotEmpty() }
+                ?: optString("id").takeIf { it.isNotEmpty() }
+                ?: optJSONObject("card")?.optString("tmdb_id")?.takeIf { it.isNotEmpty() }
+                ?: optJSONObject("card")?.optString("id")?.takeIf { it.isNotEmpty() }
         )
     }
 
@@ -838,6 +843,10 @@ class PlayerStateManager(context: Context) {
             season?.let { put("season", it) }
             episode?.let { put("episode", it) }
             imdbId?.let { put("imdb_id", it) }
+            tmdbId?.let {
+                put("id", it)
+                put("tmdb_id", it)
+            }
         }
     }
 

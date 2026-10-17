@@ -19,8 +19,8 @@ class Http(private val disableH2ForCall: Boolean = consumeDisableH2()) {
     var lastErrorCode: Int = 0
         private set
 
-    private fun getReqBuilder(url: String, headers: JSONObject?): Request.Builder {
-        debugLog("LampaHttp.RB", url)
+    private fun getReqBuilder(method: String, url: String, headers: JSONObject?): Request.Builder {
+        debugLog("LampaHttp.RB", "$method $url")
         var ua = HttpHelper.userAgent
         val rb = Request.Builder().url(url)
         if (headers != null) {
@@ -95,9 +95,11 @@ class Http(private val disableH2ForCall: Boolean = consumeDisableH2()) {
 
     @JvmOverloads
     @Throws(Exception::class)
-    fun Get(
+    fun Send(
+        method: String,
         url: String,
-        headers: JSONObject?,
+        data: String = "",
+        headers: JSONObject? = null,
         timeout: Int,
         dataType: String? = null
     ): JSONObject {
@@ -105,11 +107,39 @@ class Http(private val disableH2ForCall: Boolean = consumeDisableH2()) {
             this.lastErrorCode = 400
             throw Exception("Bad Request (Invalid protocol; use http or https)")
         }
-        val rb = getReqBuilder(url, headers)
+        val normalizedMethod = method.uppercase(Locale.ROOT).ifEmpty {
+            if (data.isEmpty()) "GET" else "POST"
+        }
+        val rb = getReqBuilder(normalizedMethod, url, headers)
+        val requestBody = if (
+            normalizedMethod != "GET" &&
+            normalizedMethod != "HEAD" &&
+            (data.isNotEmpty() || normalizedMethod == "POST" || normalizedMethod == "PUT" || normalizedMethod == "PATCH")
+        ) {
+            val mediaType = if (data.isEmpty()) {
+                null
+            } else {
+                (headers?.optString("Content-Type", "application/x-www-form-urlencoded")
+                    ?: "application/x-www-form-urlencoded").toMediaTypeOrNull()
+            }
+            data.toRequestBody(mediaType)
+        } else {
+            null
+        }
+        rb.method(normalizedMethod, requestBody)
         val client = HttpHelper.getOkHttpClient(timeout, disableH2ForCall)
         val response = client.newCall(rb.build()).execute()
         return getJsonFromResponse(response, dataType)
     }
+
+    @JvmOverloads
+    @Throws(Exception::class)
+    fun Get(
+        url: String,
+        headers: JSONObject?,
+        timeout: Int,
+        dataType: String? = null
+    ): JSONObject = Send("GET", url, "", headers, timeout, dataType)
 
     @JvmOverloads
     @Throws(Exception::class)
@@ -119,20 +149,7 @@ class Http(private val disableH2ForCall: Boolean = consumeDisableH2()) {
         headers: JSONObject?,
         timeout: Int,
         dataType: String? = null
-    ): JSONObject {
-        if (!url.lowercase(Locale.ROOT).startsWith("http")) {
-            this.lastErrorCode = 400
-            throw Exception("Bad Request (Invalid protocol; use http or https)")
-        }
-        val rb = getReqBuilder(url, headers)
-        val contentType = headers?.optString("Content-Type", "application/x-www-form-urlencoded")
-            ?: "application/x-www-form-urlencoded"
-        val requestBody = data.toRequestBody(contentType.toMediaTypeOrNull())
-        rb.post(requestBody)
-        val client = HttpHelper.getOkHttpClient(timeout, disableH2ForCall)
-        val response = client.newCall(rb.build()).execute()
-        return getJsonFromResponse(response, dataType)
-    }
+    ): JSONObject = Send("POST", url, data, headers, timeout, dataType)
 
     companion object {
         private const val MAX_ALLOWED_BODY_SIZE: Long = 2L * 1024L * 1024L // 2 MB

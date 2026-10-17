@@ -31,6 +31,10 @@ object ChannelManager {
     private const val TAG = "ChannelManager"
     private val lock = Any()
 
+    private val LAMPA_CHANNEL_NAMES = setOf(
+        RECS, LIKE, BOOK, HIST, LOOK, VIEW, SCHD, CONT, THRW
+    )
+
     @SuppressLint("RestrictedApi")
     private val PREVIEW_PROGRAM_MAP_PROJECTION = arrayOf(
         TvContractCompat.BaseTvColumns._ID,
@@ -117,7 +121,9 @@ object ChannelManager {
 
     fun removeAll() {
         synchronized(lock) {
-            ChannelHelper.list().forEach { ChannelHelper.rem(it) }
+            ChannelHelper.list()
+                .filter { it.data in LAMPA_CHANNEL_NAMES }
+                .forEach { ChannelHelper.rem(it) }
         }
     }
 
@@ -167,12 +173,9 @@ object ChannelManager {
 
     private fun removeLostChannels() {
         synchronized(lock) {
-            // Remove channels with null data
-            ChannelHelper.list().filter { it.internalProviderDataByteArray == null }.forEach {
-                ChannelHelper.rem(it)
-            }
-            // Remove duplicate channels
+            // Remove duplicate Lampa channels only. Do not touch channels belonging to other applications.
             val channels = ChannelHelper.list()
+                .filter { it.data in LAMPA_CHANNEL_NAMES }
             val duplicates = channels.groupBy { it.data }.values.filter { it.size > 1 }
             duplicates.flatten().distinctBy { it.id }.forEach {
                 ChannelHelper.rem(it)
@@ -182,35 +185,44 @@ object ChannelManager {
 
     @SuppressLint("RestrictedApi")
     fun getInternalIdAndChanIdFromPreviewProgramId(previewProgramId: Long): Pair<String?, Long?> {
-        return App.context.contentResolver.query(
-            TvContractCompat.buildPreviewProgramUri(previewProgramId), null, null, null, null
-        )?.use { cursor ->
-            if (cursor.moveToFirst()) {
-                val program = PreviewProgram.fromCursor(cursor)
-                Pair(program.internalProviderId, program.channelId)
-            } else {
-                Pair(null, null)
-            }
-        } ?: Pair(null, null)
+        return try {
+            App.context.contentResolver.query(
+                TvContractCompat.buildPreviewProgramUri(previewProgramId), null, null, null, null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val program = PreviewProgram.fromCursor(cursor)
+                    Pair(program.internalProviderId, program.channelId)
+                } else {
+                    Pair(null, null)
+                }
+            } ?: Pair(null, null)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to query preview program $previewProgramId: ${e.message}")
+            Pair(null, null)
+        }
     }
 
     @SuppressLint("RestrictedApi")
     private fun findProgramByMovieId(channelId: Long, movieId: String): PreviewProgram? {
-        App.context.contentResolver.query(
-            TvContractCompat.buildPreviewProgramsUriForChannel(channelId),
-            PREVIEW_PROGRAM_MAP_PROJECTION,
-            null,
-            null,
-            null
-        )?.use { cursor ->
-            if (cursor.moveToFirst()) {
-                do {
-                    val program = PreviewProgram.fromCursor(cursor)
-                    if (movieId == program.internalProviderId) {
-                        return program
-                    }
-                } while (cursor.moveToNext())
+        try {
+            App.context.contentResolver.query(
+                TvContractCompat.buildPreviewProgramsUriForChannel(channelId),
+                PREVIEW_PROGRAM_MAP_PROJECTION,
+                null,
+                null,
+                null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    do {
+                        val program = PreviewProgram.fromCursor(cursor)
+                        if (movieId == program.internalProviderId) {
+                            return program
+                        }
+                    } while (cursor.moveToNext())
+                }
             }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to find program $movieId in channel $channelId: ${e.message}")
         }
         return null
     }
@@ -221,11 +233,16 @@ object ChannelManager {
     }
 
     private fun removeProgram(previewProgramId: Long): Int {
-        return App.context.contentResolver.delete(
-            TvContractCompat.buildPreviewProgramUri(previewProgramId),
-            null, null
-        ).also {
-            if (it < 1) Log.e(TAG, "Failed to delete program $previewProgramId")
+        return try {
+            App.context.contentResolver.delete(
+                TvContractCompat.buildPreviewProgramUri(previewProgramId),
+                null, null
+            ).also {
+                if (it < 1) Log.e(TAG, "Failed to delete program $previewProgramId")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to delete preview program $previewProgramId: ${e.message}")
+            0
         }
     }
 
