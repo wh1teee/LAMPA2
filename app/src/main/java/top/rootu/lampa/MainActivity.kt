@@ -144,6 +144,7 @@ class MainActivity : BaseActivity(),
     private var browserInitComplete = false
     private var isMenuVisible = false
     private var isPlayerLaunching = false // suppress WebView pauseTimers while our external player is open
+    private var activePlayActivity: String = ""
     private lateinit var loaderView: LottieAnimationView
     private lateinit var resultLauncher: ActivityResultLauncher<Intent>
     private lateinit var speechLauncher: ActivityResultLauncher<Intent>
@@ -453,7 +454,20 @@ class MainActivity : BaseActivity(),
             addJavascriptInterface(AndroidJS(this@MainActivity, this), "AndroidJS")
         }
         logDebug("onBrowserInitCompleted LAMPA_URL: $LAMPA_URL")
-        HttpHelper.preconnectAsync(LAMPA_URL, tmdbApiUrl, tmdbImgUrl)
+        HttpHelper.preconnectAsync(
+            LAMPA_URL,
+            tmdbApiUrl,
+            tmdbImgUrl,
+            "https://jac.red",
+            "https://apitmdb.cub.best",
+            "https://imagetmdb.com"
+        )
+        top.rootu.lampa.net.TorrServerSync.probeLocalTorrServerAsync { foundUrl ->
+            runOnUiThread {
+                runVoidJsFunc("Lampa.Storage.set", "'torrserver_url', '$foundUrl'")
+                runVoidJsFunc("Lampa.Storage.set", "'internal_torrclient', true")
+            }
+        }
         if (LAMPA_URL.isEmpty()) {
             logDebug("onBrowserInitCompleted showUrlInputDialog")
             showUrlInputDialog()
@@ -520,7 +534,7 @@ class MainActivity : BaseActivity(),
             try {
                 val obj = JSONObject(activityJson)
                 if (obj.optString("component") != "full") return@launch
-                val card = getCard(obj.optJSONObject("movie")) ?: return@launch
+                val card = getCardFromActivity(activityJson) ?: return@launch
                 val state = playerStateManager.findStateByCard(card) ?: return@launch
                 val resumeUrl = state.currentItem?.url ?: return@launch
                 top.rootu.lampa.net.TorrServerSync.preloadEpisodeAsync(
@@ -824,13 +838,17 @@ class MainActivity : BaseActivity(),
     ) {
         val opened = JSONArray()
         val openedUrls = mutableListOf<String>()
+        val timecodesSec = LinkedHashMap<String, Int>()
         (playlist.indices.filter { it != current } + current).forEach { i ->
-            if (positions.optInt(i, -1) <= 0) return@forEach // never opened, or opened and not played
-            opened.put(playlist[i].url)
-            openedUrls.add(playlist[i].url)
+            val posSec = positions.optInt(i, -1)
+            if (posSec <= 0) return@forEach // never opened, or opened and not played
+            val url = playlist[i].url
+            opened.put(url)
+            openedUrls.add(url)
+            timecodesSec[url] = posSec
         }
         if (opened.length() == 0) return
-        top.rootu.lampa.net.TorrServerSync.markViewedAsync(openedUrls, headers)
+        top.rootu.lampa.net.TorrServerSync.markViewedAsync(openedUrls, headers, timecodesSec)
         notifyLampaPlaylistOpened(opened)
     }
 
@@ -1026,8 +1044,28 @@ class MainActivity : BaseActivity(),
             (function() {
                 // Only setup if not already exists
                 if (typeof window._androidStorageListener === 'undefined') {
+                    var watchedKeys = {
+                        activity: 1,
+                        player_timecode: 1,
+                        playlist_next: 1,
+                        torrents_view: 1,
+                        poster_size: 1,
+                        language: 1,
+                        source: 1,
+                        account_use: 1,
+                        recomends_list: 1,
+                        proxy_tmdb: 1,
+                        baseUrlApiTMDB: 1,
+                        baseUrlImageTMDB: 1,
+                        torrserver_url: 1,
+                        torrserver_auth: 1,
+                        torrserver_login: 1,
+                        torrserver_password: 1
+                    };
                     window._androidStorageListener = function(o) {
-                        AndroidJS.storageChange(JSON.stringify(o));
+                        if (o && o.name && watchedKeys[o.name]) {
+                            AndroidJS.storageChange(JSON.stringify(o));
+                        }
                     };
                     if (Lampa && Lampa.Storage && Lampa.Storage.listener) {
                         try {
@@ -2325,6 +2363,7 @@ class MainActivity : BaseActivity(),
     fun runPlayer(jsonObject: JSONObject, launchPlayer: String = "", activity: String? = null) {
         try {
             val playActivity = activity?.takeIf { it.isNotEmpty() } ?: lampaActivity
+            activePlayActivity = playActivity
             val videoUrl = jsonObject.optString("url").takeIf { it.isNotBlank() } ?: run {
                 App.toast(R.string.invalid_url, true)
                 return
@@ -2390,7 +2429,11 @@ class MainActivity : BaseActivity(),
                     // Get available players
                     val availablePlayers =
                         getAvailablePlayers(it).takeIf { it.isNotEmpty() } ?: run {
-                            App.toast(R.string.no_player_activity_found, true)
+                            logDebug("No external player found, falling back to Lampa built-in HTML5 player")
+                            runVoidJsFunc(
+                                "(function(data){try{if(window.Lampa&&Lampa.Player){Lampa.Player.runas('lampa');Lampa.Player.play(data);if(data.playlist)Lampa.Player.playlist(data.playlist);}}catch(e){}})",
+                                jsonObject.toString()
+                            )
                             return
                         }
                     // Check if selected player exists
@@ -2411,7 +2454,7 @@ class MainActivity : BaseActivity(),
                         launchPlayer(it)
                     } else {
                         // Show player selection dialog
-                        showPlayerSelectionDialog(availablePlayers, jsonObject, isIPTV)
+                        showPlayerSelectionDialog(availablePlayers, jsonObject, isIPTV, playActivity)
                     }
                 }
             }
@@ -3415,7 +3458,8 @@ class MainActivity : BaseActivity(),
     private fun showPlayerSelectionDialog(
         players: List<ResolveInfo>,
         jsonObject: JSONObject,
-        isIPTV: Boolean
+        isIPTV: Boolean,
+        playActivity: String = lampaActivity
     ) {
         val mainActivity = this
         val listAdapter = AppListAdapter(mainActivity, players)
@@ -3435,7 +3479,7 @@ class MainActivity : BaseActivity(),
             }
 
             dialog.dismiss()
-            runPlayer(jsonObject, selectedPlayer)
+            runPlayer(jsonObject, selectedPlayer, playActivity)
         }
 
         val playerChooserDialog = playerChooser.create()
@@ -3472,8 +3516,9 @@ class MainActivity : BaseActivity(),
             return
         }
         lifecycleScope.launch {
+            val stateActivity = activePlayActivity.ifEmpty { lampaActivity }
             // Get current state and resolve which video URL we're processing
-            val currentState = playerStateManager.getState(lampaActivity)
+            val currentState = playerStateManager.getState(stateActivity)
             val videoUrl = endedVideoUrl.takeUnless { it.isBlank() || it == "null" }
                 ?: currentState.currentUrl
                 ?: return@launch  // Exit if no valid URL found
@@ -3533,7 +3578,7 @@ class MainActivity : BaseActivity(),
 
             // Persist the updated state
             playerStateManager.saveState(
-                activityJson = lampaActivity,
+                activityJson = stateActivity,
                 playlist = updatedPlaylist,
                 currentIndex = targetIndex,
                 currentUrl = targetUrl,
@@ -3545,13 +3590,13 @@ class MainActivity : BaseActivity(),
             // Update PlayNext (must finish before clearState)
             if (allEnded) {
                 val updateJob = launch(Dispatchers.Default) {
-                    updatePlayNext(true)
+                    updatePlayNext(true, stateActivity)
                 }
                 updateJob.join()
-                playerStateManager.clearState(lampaActivity)
+                playerStateManager.clearState(stateActivity)
             } else {
                 launch(Dispatchers.Default) {
-                    updatePlayNext(false)
+                    updatePlayNext(false, stateActivity)
                 }
             }
         }
@@ -3566,17 +3611,22 @@ class MainActivity : BaseActivity(),
         if (playlist.isEmpty() || currentIndex !in playlist.indices) return
         val opened = JSONArray()
         val openedUrls = mutableListOf<String>()
+        val timecodesSec = mutableMapOf<String, Int>()
         val range = if (playerAutoNext) {
             getCompletionRange(startIndex, currentIndex, playlist.lastIndex) + currentIndex
         } else {
             listOf(currentIndex)
         }
         range.distinct().filter { it in playlist.indices }.forEach { idx ->
-            val url = playlist[idx].url
+            val item = playlist[idx]
+            val url = item.url
             opened.put(url)
             openedUrls.add(url)
+            item.timeline?.time?.toInt()?.takeIf { it > 0 }?.let { sec ->
+                timecodesSec[url] = sec
+            }
         }
-        top.rootu.lampa.net.TorrServerSync.markViewedAsync(openedUrls, headers)
+        top.rootu.lampa.net.TorrServerSync.markViewedAsync(openedUrls, headers, timecodesSec)
         notifyLampaPlaylistOpened(opened)
     }
 
@@ -3705,7 +3755,8 @@ class MainActivity : BaseActivity(),
 
     private fun getCardFromActivity(activityJson: String?): LampaCard? {
         return try {
-            getCard(JSONObject(activityJson ?: return null).optJSONObject("movie"))
+            val obj = JSONObject(activityJson ?: return null)
+            getCard(obj.optJSONObject("movie") ?: obj.optJSONObject("card"))
         } catch (e: JSONException) {
             logDebug("Invalid activity JSON: ${e.message}")
             null
@@ -3721,23 +3772,25 @@ class MainActivity : BaseActivity(),
     /**
      * Updates Watch Next on Android TV.
      */
-    private suspend fun updatePlayNext(ended: Boolean) = withContext(Dispatchers.Default) {
+    private suspend fun updatePlayNext(ended: Boolean, stateActivity: String = activePlayActivity.ifEmpty { lampaActivity }) = withContext(Dispatchers.Default) {
         if (!isTvContentProviderAvailable) return@withContext
         try {
-            val card = (playerStateManager.getState(lampaActivity).extras[LAMPA_CARD_KEY] as? String)
+            val card = (playerStateManager.getState(stateActivity).extras[LAMPA_CARD_KEY] as? String)
                 ?.let { getJson(it, LampaCard::class.java) }
-                ?: getCardFromActivity(lampaActivity) ?: return@withContext
+                ?: getCardFromActivity(stateActivity)
+                ?: getCardFromActivity(lampaActivity)
+                ?: return@withContext
             val state = playerStateManager.findStateByCard(card) ?: return@withContext
             when {
                 ended -> { // Case 1: All episodes/movie ended - remove from Continue Watching
                     logDebug("PlayNext: remove ${card.id} and clearState [ended]")
                     WatchNext.removeContinueWatch(card)
-                    playerStateManager.clearState(lampaActivity)
+                    playerStateManager.clearState(stateActivity)
                 }
                 // Case 2: Valid ongoing playback or Next Up episode - update Continue Watching
                 state.currentItem != null && !state.isEnded -> {
                     logDebug("PlayNext: Updating ${card.id}")
-                    WatchNext.addLastPlayed(card, lampaActivity)
+                    WatchNext.addLastPlayed(card, stateActivity)
                 }
 
                 else -> {

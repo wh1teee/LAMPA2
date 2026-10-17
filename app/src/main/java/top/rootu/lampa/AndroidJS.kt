@@ -57,6 +57,7 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
     private val reqResponse = ConcurrentHashMap<String, String>()
     private val pendingKeys = java.util.concurrent.ConcurrentLinkedQueue<String>()
     private val inFlightGets = ConcurrentHashMap<String, kotlinx.coroutines.Deferred<JSONObject>>()
+    private val parserCache = ConcurrentHashMap<String, Pair<Long, JSONObject>>()
     private var keys: Array<String?>? = null
     private var values: Array<String?>? = null
     private var dumped = false
@@ -74,7 +75,14 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
         private const val TAG = "AndroidJS"
         private const val UPDATE_DELAY = 5000L // in ms, wait before update TV channel
         private const val MAX_PENDING_RESPONSES = 256
+        private const val PARSER_CACHE_TTL_MS = 90_000L
         private val HTTP_METHODS = setOf("DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT")
+        private val PARSER_PATH_MARKERS = arrayOf(
+            "/api/v2.0/indexers",
+            "/api/v1.0/torrents",
+            "/api/v1/search",
+            "/torznab/api"
+        )
         private val TORRSERVER_PACKAGES = listOf("ru.yourok.torrserve", "ru.yourok.torrserve.atv")
 
         @Volatile
@@ -363,8 +371,20 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
                         val genericIntent = Intent(Intent.ACTION_VIEW, url.toUri()).populateTorrentExtras()
                         mainActivity.startActivity(genericIntent)
                     } catch (e: Exception) {
-                        Log.e(TAG, "Failed to open torrent link", e)
-                        App.toast(R.string.no_torrent_activity_found, true)
+                        if (torrserverUrl.isNotBlank()) {
+                            Log.i(TAG, "No external torrent app installed; routing magnet/torrent to TorrServer ($torrserverUrl)")
+                            val safeUrl = JSONObject.quote(url)
+                            val safeTitle = JSONObject.quote(jsonData.optString("title", "Torrent"))
+                            val safePoster = JSONObject.quote(jsonData.optString("poster", ""))
+                            val movieJson = jsonData.optJSONObject("data")?.optJSONObject("movie")?.toString() ?: "null"
+                            mainActivity.runVoidJsFunc(
+                                "(function(){try{if(window.Lampa){Lampa.Storage.set('internal_torrclient',true,true);if(Lampa.Torrent&&Lampa.Torrent.start){Lampa.Torrent.start({title:$safeTitle,MagnetUri:$safeUrl,Link:$safeUrl,poster:$safePoster},$movieJson);}}}catch(err){}})",
+                                ""
+                            )
+                        } else {
+                            Log.e(TAG, "Failed to open torrent link", e)
+                            App.toast(R.string.no_torrent_activity_found, true)
+                        }
                     }
                 }
             }
@@ -497,16 +517,36 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
                 val http = Http(disableH2)
                 val result = try {
                     val responseJSON = if (method == "GET" && !disableH2) {
+                        val isParserQuery = PARSER_PATH_MARKERS.any { url.contains(it, ignoreCase = true) }
                         val coalesceKey = "$url|${dataType.orEmpty()}|$finalHeaders"
-                        val deferred = inFlightGets.computeIfAbsent(coalesceKey) {
-                            channelScope.async(Dispatchers.IO) {
-                                http.Send(method, url, finalRequestContent, finalHeaders, timeout, dataType)
+                        val cachedParserResp = if (isParserQuery) {
+                            parserCache[coalesceKey]?.let { (ts, obj) ->
+                                if (System.currentTimeMillis() - ts <= PARSER_CACHE_TTL_MS) {
+                                    debugLog(TAG, "httpReq parserCache HIT for $url")
+                                    obj
+                                } else {
+                                    parserCache.remove(coalesceKey)
+                                    null
+                                }
                             }
-                        }
-                        try {
-                            deferred.await()
-                        } finally {
-                            inFlightGets.remove(coalesceKey, deferred)
+                        } else null
+
+                        cachedParserResp ?: run {
+                            val deferred = inFlightGets.computeIfAbsent(coalesceKey) {
+                                channelScope.async(Dispatchers.IO) {
+                                    http.Send(method, url, finalRequestContent, finalHeaders, timeout, dataType)
+                                }
+                            }
+                            try {
+                                deferred.await().also { fetched ->
+                                    if (isParserQuery && fetched.optString("body").contains("\"Results\"")) {
+                                        if (parserCache.size >= 64) parserCache.clear()
+                                        parserCache[coalesceKey] = System.currentTimeMillis() to fetched
+                                    }
+                                }
+                            } finally {
+                                inFlightGets.remove(coalesceKey, deferred)
+                            }
                         }
                     } else {
                         http.Send(method, url, finalRequestContent, finalHeaders, timeout, dataType)

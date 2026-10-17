@@ -37,6 +37,58 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
 
     companion object {
         const val LOG_TAG = "WEB CONSOLE"
+
+        val DOCUMENT_START_BOOTSTRAP_JS = """
+            (function() {
+                try {
+                    window.lampa_settings = window.lampa_settings || {};
+                    window.lampa_settings.torrents_use = true;
+                    window.lampa_settings.demo = false;
+                    window.lampa_settings.read_only = false;
+                    window.lampa_settings.dcma = false;
+                    window.lampa_settings.disable_features = window.lampa_settings.disable_features || {};
+                    window.lampa_settings.disable_features.dmca = true;
+                    window.lampa_settings.disable_features.lgbt = true;
+
+                    if (typeof localStorage !== 'undefined') {
+                        if (!localStorage.getItem('language')) {
+                            localStorage.setItem('language', 'ru');
+                        }
+                        if (localStorage.getItem('parser_use') === null) {
+                            localStorage.setItem('parser_use', 'true');
+                        }
+                        if (!localStorage.getItem('parser_torrent_type')) {
+                            localStorage.setItem('parser_torrent_type', 'jackett');
+                        }
+                        var jUrl = localStorage.getItem('jackett_url') || '';
+                        if (!jUrl || jUrl.indexOf('jacred.xyz') !== -1) {
+                            localStorage.setItem('jackett_url', 'https://jac.red');
+                        }
+                        if (!localStorage.getItem('jackett_key')) {
+                            localStorage.setItem('jackett_key', '1');
+                        }
+                        if (localStorage.getItem('parse_in_search') === null) {
+                            localStorage.setItem('parse_in_search', 'true');
+                        }
+                        if (!localStorage.getItem('torrserver_url')) {
+                            localStorage.setItem('torrserver_url', 'http://127.0.0.1:8090');
+                        }
+                        if (!localStorage.getItem('torrserver_url_two')) {
+                            localStorage.setItem('torrserver_url_two', 'http://10.0.2.2:8090');
+                        }
+                        if (localStorage.getItem('internal_torrclient') === null) {
+                            localStorage.setItem('internal_torrclient', 'true');
+                        }
+                        if (localStorage.getItem('torrserver_savedb') === null) {
+                            localStorage.setItem('torrserver_savedb', 'true');
+                        }
+                        if (localStorage.getItem('torrserver_tracktimecode') === null) {
+                            localStorage.setItem('torrserver_tracktimecode', 'true');
+                        }
+                    }
+                } catch (e) {}
+            })();
+        """.trimIndent()
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -75,9 +127,23 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
             }
         }
 
+        browser?.let { webView ->
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                try {
+                    androidx.webkit.WebViewCompat.addDocumentStartJavaScript(
+                        webView,
+                        DOCUMENT_START_BOOTSTRAP_JS,
+                        setOf("*")
+                    )
+                } catch (_: Exception) {
+                }
+            }
+        }
+
         browser?.webViewClient = object : WebViewClientCompat() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 super.onPageStarted(view, url, favicon)
+                view?.evaluateJavascript(DOCUMENT_START_BOOTSTRAP_JS, null)
             }
 
             override fun onPageFinished(view: WebView, url: String) {
@@ -354,10 +420,19 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
                 if (window.__lampaNativePerfBoost) return;
                 window.__lampaNativePerfBoost = true;
                 try {
+                    window.lampa_settings = window.lampa_settings || {};
+                    window.lampa_settings.torrents_use = true;
+                    window.lampa_settings.demo = false;
+                    window.lampa_settings.read_only = false;
+                    window.lampa_settings.dcma = false;
+                    window.lampa_settings.disable_features = window.lampa_settings.disable_features || {};
+                    window.lampa_settings.disable_features.dmca = true;
+                    window.lampa_settings.disable_features.lgbt = true;
+
                     var style = document.createElement('style');
                     style.id = 'lampa-native-gpu-style';
                     style.textContent = [
-                        '.card, .card__view, .items-line, .scroll__body, .full-start__background, .torrents-item {',
+                        '.card, .card__view, .items-line, .scroll__body, .full-start__background, .torrent-item, .torrent-file, .torrent-serial {',
                         '  will-change: transform;',
                         '  backface-visibility: hidden;',
                         '  -webkit-backface-visibility: hidden;',
@@ -380,23 +455,90 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
 
                     var hoverTimer = null;
                     var streamHoverTimer = null;
+                    var currentFocusedCardId = null;
                     var preloadedBackdrops = {};
+                    var preloadedCards = {};
+                    var preloadedParsers = {};
 
+                    var prefetchCardTorrents = function(card) {
+                        try {
+                            if (!card || !card.id || preloadedParsers[card.id]) return;
+                            if (!window.Lampa || !Lampa.Storage || !Lampa.Storage.field('parser_use') || !Lampa.Parser || !Lampa.Parser.get) return;
+                            var title = card.title || card.name || '';
+                            var orig = card.original_title || card.original_name || title;
+                            if (!title && !orig) return;
+                            preloadedParsers[card.id] = true;
+                            var year = ((card.first_air_date || card.release_date || '0000') + '').slice(0, 4);
+                            var combinations = {
+                                'df': orig,
+                                'df_year': orig + ' ' + year,
+                                'df_lg': orig + ' ' + title,
+                                'df_lg_year': orig + ' ' + title + ' ' + year,
+                                'lg': title,
+                                'lg_year': title + ' ' + year,
+                                'lg_df': title + ' ' + orig,
+                                'lg_df_year': title + ' ' + orig + ' ' + year
+                            };
+                            var searchStr = combinations[Lampa.Storage.field('parse_lang')] || title || orig;
+                            if (!searchStr) return;
+                            Lampa.Parser.get({
+                                search: searchStr,
+                                search_one: title,
+                                search_two: orig,
+                                movie: card,
+                                page: 1
+                            }, function() {}, function() {});
+                        } catch (err) {}
+                    };
+
+                    // Stage 1: Catalog Card Focus -> Preload w1280 backdrop + warm Lampa.Api.full 7-day cache + chain into Parser prefetch
                     var triggerFocusPrefetch = function(el) {
                         if (!el) return;
                         clearTimeout(hoverTimer);
                         clearTimeout(streamHoverTimer);
                         hoverTimer = setTimeout(function() {
                             try {
-                                var bg = el.getAttribute('data-backdrop') || el.getAttribute('data-bg') || (el.dataset && (el.dataset.backdrop || el.dataset.bg));
-                                if (bg && !preloadedBackdrops[bg]) {
-                                    preloadedBackdrops[bg] = true;
-                                    var img = new Image();
-                                    img.decoding = 'async';
-                                    img.src = bg;
+                                var cd = el.card_data || (el.parentElement && el.parentElement.card_data);
+                                if (cd && cd.id && window.Lampa) {
+                                    currentFocusedCardId = cd.id;
+                                    if (cd.backdrop_path && Lampa.Api && Lampa.Api.img) {
+                                        var bgUrl = Lampa.Api.img(cd.backdrop_path, 'w1280');
+                                        if (bgUrl && !preloadedBackdrops[bgUrl]) {
+                                            preloadedBackdrops[bgUrl] = true;
+                                            var img = new Image();
+                                            img.decoding = 'async';
+                                            img.src = bgUrl;
+                                        }
+                                    }
+                                    var src = cd.source || (Lampa.Storage && Lampa.Storage.field('source')) || 'tmdb';
+                                    var method = cd.name ? 'tv' : 'movie';
+                                    var cKey = src + ':' + method + ':' + cd.id;
+                                    if (!preloadedCards[cKey] && Lampa.Api && Lampa.Api.full) {
+                                        preloadedCards[cKey] = true;
+                                        Lampa.Api.full({
+                                            id: cd.id,
+                                            method: method,
+                                            card: cd,
+                                            source: src
+                                        }, function(data) {
+                                            if (data && data.movie && currentFocusedCardId === cd.id) {
+                                                prefetchCardTorrents(data.movie);
+                                            }
+                                        }, function() {});
+                                    } else if (preloadedCards[cKey]) {
+                                        prefetchCardTorrents(cd);
+                                    }
+                                } else {
+                                    var bg = el.getAttribute('data-backdrop') || el.getAttribute('data-bg') || (el.dataset && (el.dataset.backdrop || el.dataset.bg));
+                                    if (bg && !preloadedBackdrops[bg]) {
+                                        preloadedBackdrops[bg] = true;
+                                        var img2 = new Image();
+                                        img2.decoding = 'async';
+                                        img2.src = bg;
+                                    }
                                 }
                             } catch (e) {}
-                        }, 300);
+                        }, 320);
 
                         streamHoverTimer = setTimeout(function() {
                             try {
@@ -405,8 +547,60 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
                                     window.AndroidJS.prefetchHint(streamUrl);
                                 }
                             } catch (e) {}
-                        }, 450);
+                        }, 420);
                     };
+
+                    // Stage 2 & 3: Hook Lampa native listeners for Full Card Torrent Prefetch + Episode Focus Preload
+                    var attachLampaHooks = function() {
+                        if (!window.Lampa || !Lampa.Listener || window.__lampaHooksAttached) return false;
+                        window.__lampaHooksAttached = true;
+
+                        try {
+                            if (Lampa.Storage) {
+                                if (!Lampa.Storage.get('jackett_url', '') || Lampa.Storage.get('jackett_url', '').indexOf('jacred.xyz') !== -1) {
+                                    Lampa.Storage.set('jackett_url', 'https://jac.red', true);
+                                    Lampa.Storage.set('jackett_key', '1', true);
+                                    Lampa.Storage.set('parser_use', true, true);
+                                    Lampa.Storage.set('parser_torrent_type', 'jackett', true);
+                                }
+                                if (Lampa.Storage.get('torrserver_url', '') && !Lampa.Storage.field('internal_torrclient')) {
+                                    Lampa.Storage.set('internal_torrclient', true, true);
+                                }
+                            }
+                        } catch (e) {}
+
+                        // Stage 2: When a movie/series card opens, silently prefetch Jackett/RuTracker torrents into AndroidJS.parserCache
+                        Lampa.Listener.follow('full', function(e) {
+                            if (e && (e.type === 'start' || e.type === 'complite') && e.data && e.data.movie) {
+                                var movie = e.data.movie;
+                                setTimeout(function() {
+                                    prefetchCardTorrents(movie);
+                                }, 80);
+                            }
+                        });
+
+                        // Stage 3: When D-Pad focuses a file/episode in TorrServer file list, pre-warm TorrServer stream buffer
+                        var torrentFileTimer = null;
+                        Lampa.Listener.follow('torrent_file', function(e) {
+                            if (e && e.type === 'onfocus' && e.element && e.element.url) {
+                                clearTimeout(torrentFileTimer);
+                                var u = e.element.url;
+                                torrentFileTimer = setTimeout(function() {
+                                    if (window.AndroidJS && window.AndroidJS.prefetchHint) {
+                                        window.AndroidJS.prefetchHint(u);
+                                    }
+                                }, 400);
+                            }
+                        });
+                        return true;
+                    };
+
+                    if (!attachLampaHooks()) {
+                        var hookPoll = setInterval(function() {
+                            if (attachLampaHooks()) clearInterval(hookPoll);
+                        }, 250);
+                        setTimeout(function() { clearInterval(hookPoll); }, 10000);
+                    }
 
                     if (window.MutationObserver && document.body) {
                         var obs = new MutationObserver(function(mutations) {

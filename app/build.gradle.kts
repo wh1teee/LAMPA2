@@ -130,12 +130,12 @@ android {
         create("lite") {
             dimension = "default"
             buildConfigField("boolean", "enableUpdate", "true")
-            buildConfigField("String", "defaultAppUrl", "\"\"")
+            buildConfigField("String", "defaultAppUrl", "\"http://lampa.mx\"")
         }
         create("full") {
             dimension = "default"
             buildConfigField("boolean", "enableUpdate", "false")
-            buildConfigField("String", "defaultAppUrl", "\"\"")
+            buildConfigField("String", "defaultAppUrl", "\"http://lampa.mx\"")
         }
         create("ruStore") {
             dimension = "default"
