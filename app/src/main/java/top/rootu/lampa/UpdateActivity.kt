@@ -14,20 +14,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import top.rootu.lampa.helpers.hideSystemUI
 import top.rootu.lampa.helpers.Updater
-
+import top.rootu.lampa.helpers.hideSystemUI
 
 class UpdateActivity : BaseActivity() {
 
-//    private val requestPermissionLauncher =
-//        registerForActivityResult(
-//            ActivityResultContracts.RequestPermission()
-//        ) { isGranted: Boolean ->
-//            if (isGranted) {
-//                recreate()
-//            }
-//        }
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     @SuppressLint("SetTextI18n")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -35,55 +27,51 @@ class UpdateActivity : BaseActivity() {
         enableEdgeToEdge()
         setContentView(R.layout.activity_update)
         hideSystemUI()
-//        val perms = arrayOf(
-//            Manifest.permission.WRITE_EXTERNAL_STORAGE,
-//            Manifest.permission.READ_EXTERNAL_STORAGE
-//        )
-//        perms.forEach { perm ->
-//            when {
-//                ContextCompat.checkSelfPermission(
-//                    this,
-//                    perm
-//                ) == PackageManager.PERMISSION_GRANTED -> {
-//                    // granted
-//                }
-//                ActivityCompat.shouldShowRequestPermissionRationale(this, perm) -> {
-//                    requestPermissionLauncher.launch(perm)
-//                }
-//                // not granted
-//                else -> {
-//                    requestPermissionLauncher.launch(perm)
-//                }
-//            }
-//        }
 
-        findViewById<ProgressBar>(R.id.pbUpdate).visibility = View.VISIBLE
-        lifecycleScope.launch(Dispatchers.IO) {
-            if (!Updater.check())
-                finish()
-        }
-        findViewById<ProgressBar>(R.id.pbUpdate).visibility = View.GONE
+        val pbUpdate = findViewById<ProgressBar>(R.id.pbUpdate)
+        val tvUpdateTitle = findViewById<TextView>(R.id.tvUpdateTitle)
+        val tvCurrentVersion = findViewById<TextView>(R.id.tvCurrentVersion)
+        val tvNewVersion = findViewById<TextView>(R.id.tvNewVersion)
+        val tvOverview = findViewById<TextView>(R.id.tvOverview)
+        val btnCancel = findViewById<Button>(R.id.btnCancel)
+        val btnUpdate = findViewById<Button>(R.id.btnUpdate)
 
-        findViewById<TextView>(R.id.tvUpdateTitle)?.text =
+        tvUpdateTitle?.text =
             String.format(getString(R.string.update_app_found), getString(R.string.app_name))
+        tvCurrentVersion?.text =
+            "${getString(R.string.update_cur_version)}: ${BuildConfig.VERSION_NAME}"
 
-        findViewById<TextView>(R.id.tvCurrentVersion)?.text =
-            ("${getString(R.string.update_cur_version)}: ${BuildConfig.VERSION_NAME}")
-        findViewById<TextView>(R.id.tvNewVersion)?.text =
-            ("${getString(R.string.update_new_version)}: ${Updater.getVersion()}")
-        findViewById<TextView>(R.id.tvOverview)?.text = Updater.getOverview()
-
-        findViewById<Button>(R.id.btnCancel)?.setOnClickListener {
+        btnCancel?.setOnClickListener {
             finish()
         }
 
-        findViewById<Button>(R.id.btnUpdate)?.setOnClickListener {
-            it.isEnabled = false
+        btnUpdate?.isEnabled = false
+        pbUpdate?.visibility = View.VISIBLE
+
+        lifecycleScope.launch {
+            val hasUpdate = withContext(Dispatchers.IO) {
+                Updater.check()
+            }
+            if (!hasUpdate) {
+                finish()
+                return@launch
+            }
+            pbUpdate?.visibility = View.GONE
+            tvNewVersion?.text =
+                "${getString(R.string.update_new_version)}: ${Updater.getVersion()}"
+            tvOverview?.text = Updater.getOverview()
+            btnUpdate?.isEnabled = true
+            btnUpdate?.requestFocus()
+        }
+
+        btnUpdate?.setOnClickListener { button ->
+            button.isEnabled = false
             lifecycleScope.launch(Dispatchers.IO) {
-                if (update())
+                if (update()) {
                     finish()
+                }
                 withContext(Dispatchers.Main) {
-                    it.isEnabled = true
+                    button.isEnabled = true
                 }
             }
         }
@@ -92,30 +80,33 @@ class UpdateActivity : BaseActivity() {
     @SuppressLint("SetTextI18n")
     private suspend fun update(): Boolean {
         val progressBar = findViewById<ProgressBar>(R.id.pbUpdate)
+        val tvUpdateInfo = findViewById<TextView>(R.id.tvUpdateInfo)
+        val tvUpdatePrc = findViewById<TextView>(R.id.tvUpdatePrc)
+
         withContext(Dispatchers.Main) {
             progressBar.visibility = View.VISIBLE
             progressBar.isIndeterminate = false
-            findViewById<TextView>(R.id.tvUpdateInfo).setText(R.string.update_loading)
+            tvUpdateInfo.setText(R.string.update_loading)
         }
         try {
             Updater.installNewVersion { prc ->
-                Handler(Looper.getMainLooper()).post {
+                mainHandler.post {
                     progressBar.setProgress(prc, true)
-                    findViewById<TextView>(R.id.tvUpdatePrc).text = "$prc%"
+                    tvUpdatePrc.text = "$prc%"
                 }
             }
             delay(1000)
             withContext(Dispatchers.Main) {
                 progressBar.visibility = View.GONE
                 progressBar.isIndeterminate = true
-                findViewById<TextView>(R.id.tvUpdateInfo).text = ""
-                findViewById<TextView>(R.id.tvUpdatePrc).text = ""
+                tvUpdateInfo.text = ""
+                tvUpdatePrc.text = ""
             }
             return true
         } catch (e: Exception) {
             withContext(Dispatchers.Main) {
                 val msg = "Error: " + (e.message ?: "")
-                findViewById<TextView>(R.id.tvUpdateInfo).text = msg
+                tvUpdateInfo.text = msg
                 progressBar.visibility = View.GONE
             }
         }

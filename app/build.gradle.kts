@@ -1,9 +1,7 @@
-import org.gradle.internal.impldep.com.esotericsoftware.minlog.Log
 import java.util.Properties
 
 plugins {
-    id("com.android.application")
-    id("com.google.devtools.ksp")
+    alias(libs.plugins.android.application)
 }
 
 fun getVersionCode(project: Project): Int {
@@ -52,10 +50,10 @@ android {
         versionName = getVersionName(project)
 
         buildConfigField("String", "REPO_ID", "\"${getRepoId(project)}\"")
+    }
 
-        vectorDrawables {
-            useSupportLibrary = true
-        }
+    androidResources {
+        localeFilters += listOf("en", "ru", "uk", "ro", "zh")
     }
 
     signingConfigs {
@@ -93,7 +91,8 @@ android {
 
     buildTypes {
         getByName("release") {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -114,7 +113,14 @@ android {
 
     packaging {
         resources {
-            excludes += "DebugProbesKt.bin"
+            excludes += setOf(
+                "DebugProbesKt.bin",
+                "META-INF/*.kotlin_module",
+                "META-INF/LICENSE*",
+                "META-INF/NOTICE*",
+                "META-INF/AL2.0",
+                "META-INF/LGPL2.1"
+            )
         }
     }
 
@@ -146,40 +152,26 @@ android {
 }
 
 dependencies {
-    implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.jar"))))
+    implementation(platform(libs.kotlin.bom))
 
-    implementation("androidx.activity:activity-ktx:1.13.0")
-    implementation("androidx.appcompat:appcompat:1.8.0")
-    implementation("androidx.constraintlayout:constraintlayout:2.2.2")
-    implementation("androidx.core:core-ktx:1.19.0")
-    val lifecycleVersion = "2.11.0"
-    implementation("androidx.lifecycle:lifecycle-process:$lifecycleVersion")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:$lifecycleVersion")
-    implementation("androidx.preference:preference-ktx:1.2.1")
-    implementation("androidx.recommendation:recommendation:1.0.0")
-    implementation("androidx.tvprovider:tvprovider:1.1.0")
-    implementation("androidx.vectordrawable:vectordrawable:1.2.0")
-    implementation("androidx.webkit:webkit:1.17.0")
+    implementation(libs.androidx.activity.ktx)
+    implementation(libs.androidx.appcompat)
+    implementation(libs.androidx.constraintlayout)
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.lifecycle.process)
+    implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.preference.ktx)
+    implementation(libs.androidx.tvprovider)
+    implementation(libs.androidx.webkit)
 
-    val glideVersion = "5.0.9"
-    implementation("com.github.bumptech.glide:glide:$glideVersion")
-    implementation("com.github.bumptech.glide:okhttp3-integration:$glideVersion") {
-        exclude(group = "glide-parent")
-        isTransitive = false
-    }
-    ksp("com.github.bumptech.glide:ksp:$glideVersion")
-    implementation("com.github.bumptech.glide:annotations:$glideVersion")
+    implementation(libs.google.material)
+    implementation(libs.okhttp)
+    implementation(libs.okhttp.dnsoverhttps)
+    implementation(libs.okhttp.brotli)
+    implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.gson)
+    implementation(libs.lottie)
+    implementation(libs.rhino)
 
-    implementation("com.google.android.material:material:1.14.0")
-    val okhttpVersion = "5.5.0"
-    implementation("com.squareup.okhttp3:okhttp:$okhttpVersion")
-    implementation("com.squareup.okhttp3:okhttp-dnsoverhttps:$okhttpVersion")
-    implementation("org.brotli:dec:0.1.2")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
-    implementation("com.google.code.gson:gson:2.14.0")
-    implementation("com.airbnb.android:lottie:6.7.1")
-    implementation("info.guardianproject.netcipher:netcipher:2.1.0")
-    implementation("junit:junit:4.13.2")
-    implementation("org.conscrypt:conscrypt-android:2.7.0")
-    implementation("org.mozilla:rhino:1.9.1")
+    testImplementation(libs.junit)
 }

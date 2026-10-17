@@ -1,7 +1,12 @@
 package top.rootu.lampa.tmdb
 
 import android.net.Uri
+import android.util.LruCache
 import androidx.core.net.toUri
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.runBlocking
 import okhttp3.Dns
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
@@ -14,14 +19,15 @@ import top.rootu.lampa.helpers.Prefs.appLang
 import top.rootu.lampa.helpers.Prefs.tmdbApiUrl
 import top.rootu.lampa.helpers.Prefs.tmdbImgUrl
 import top.rootu.lampa.helpers.capitalizeFirstLetter
+import top.rootu.lampa.net.HttpHelper
 import top.rootu.lampa.tmdb.models.entity.Entities
 import top.rootu.lampa.tmdb.models.entity.Entity
 import top.rootu.lampa.tmdb.models.entity.Genre
 import java.io.IOException
 import java.net.Inet6Address
 import java.net.InetAddress
+import java.net.UnknownHostException
 import java.util.Locale
-import java.util.concurrent.TimeUnit
 
 object TMDB {
     const val APIURL = "https://api.themoviedb.org/3/"
@@ -37,6 +43,9 @@ object TMDB {
         populateGenres(tvGenres, ret)
         ret
     }
+
+    private val entityCache = LruCache<String, Entity>(256)
+    private val tmdbDispatcher = Dispatchers.IO.limitedParallelism(8)
 
     private val httpClient: OkHttpClient by lazy { startWithQuad9DNS() }
 
@@ -54,15 +63,19 @@ object TMDB {
             "iw" -> "he"
             "in" -> "id"
             "ji" -> "yi"
-            "lv" -> "en" // FIXME: Empty Genre Names on LV, so force EN for TMDB requests
+            "lv" -> "en" // Empty Genre Names on LV, force EN for TMDB requests
             else -> lang
         }
     }
 
     fun initGenres() {
         try {
-            movieGenres = fetchGenres("genre/movie/list") ?: emptyList()
-            tvGenres = fetchGenres("genre/tv/list") ?: emptyList()
+            runBlocking(tmdbDispatcher) {
+                val moviesDeferred = async { fetchGenres("genre/movie/list") ?: emptyList() }
+                val tvDeferred = async { fetchGenres("genre/tv/list") ?: emptyList() }
+                movieGenres = moviesDeferred.await()
+                tvGenres = tvDeferred.await()
+            }
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -85,12 +98,12 @@ object TMDB {
     val genres: Map<Int, String> get() = _genres
 
     fun startWithQuad9DNS(): OkHttpClient {
-        val bootstrapClient = OkHttpClient.Builder().build()
+        val baseClient = HttpHelper.client
         val dnsUrl = "https://dns.quad9.net/dns-query".toHttpUrlOrNull()
 
-        val dns = dnsUrl?.let {
+        val dohDns = dnsUrl?.let {
             DnsOverHttps.Builder()
-                .client(bootstrapClient)
+                .client(baseClient)
                 .url(it)
                 .bootstrapDnsHosts(
                     InetAddress.getByName("9.9.9.9"),
@@ -98,11 +111,26 @@ object TMDB {
                     Inet6Address.getByName("2620:fe::fe")
                 )
                 .build()
-        } ?: Dns.SYSTEM
+        }
 
-        return bootstrapClient.newBuilder()
-            .connectTimeout(15000L, TimeUnit.MILLISECONDS)
-            .dns(dns)
+        val resilientDns = if (dohDns != null) {
+            object : Dns {
+                override fun lookup(hostname: String): List<InetAddress> {
+                    return try {
+                        dohDns.lookup(hostname)
+                    } catch (_: UnknownHostException) {
+                        Dns.SYSTEM.lookup(hostname)
+                    } catch (_: Exception) {
+                        Dns.SYSTEM.lookup(hostname)
+                    }
+                }
+            }
+        } else {
+            Dns.SYSTEM
+        }
+
+        return baseClient.newBuilder()
+            .dns(resilientDns)
             .build()
     }
 
@@ -140,20 +168,24 @@ object TMDB {
             val request = Request.Builder().url(link).build()
             httpClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) throw IOException("Unexpected code $response")
-                val body = response.body?.string()
-                if (body.isNullOrEmpty()) return null
-                val entities = getJson(body, Entities::class.java)
-                val ret = mutableListOf<Entity>()
-                entities?.results?.forEach {
-                    if (it.media_type == null) fixEntity(it)
-                    if (it.media_type == "movie" || it.media_type == "tv") {
-                        video("${it.media_type}/${it.id}")?.let { ent ->
-                            fixEntity(ent)
-                            ret.add(ent)
+                val body = response.body.string()
+                if (body.isEmpty()) return null
+                val entities = getJson(body, Entities::class.java) ?: return null
+                val rawResults = entities.results
+
+                val resolved = runBlocking(tmdbDispatcher) {
+                    rawResults.map { item ->
+                        async {
+                            if (item.media_type == null) fixEntity(item)
+                            if (item.media_type == "movie" || item.media_type == "tv") {
+                                video("${item.media_type}/${item.id}")?.also { fixEntity(it) }
+                            } else {
+                                null
+                            }
                         }
-                    }
+                    }.awaitAll().filterNotNull()
                 }
-                entities?.apply { results = ret }
+                entities.apply { results = resolved }
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -166,13 +198,23 @@ object TMDB {
     }
 
     private fun videoDetail(endpoint: String, lang: String = ""): Entity? {
-        val urlBuilder = buildTmdbUriBuilder(endpoint)
-        val params = mutableMapOf<String, String>().apply {
-            put("api_key", APIKEY)
-            put("language", lang.ifBlank { getLang() })
-            put("append_to_response", "videos,images,alternative_titles")
-            put("include_image_language", "${getLang()},ru,en,null")
+        val effectiveLang = lang.ifBlank { getLang() }
+        val isGenreRequest = endpoint.startsWith("genre/")
+        val cacheKey = "${App.context.tmdbApiUrl}|${App.context.tmdbImgUrl}|$endpoint|$effectiveLang"
+
+        if (!isGenreRequest) {
+            synchronized(entityCache) {
+                entityCache.get(cacheKey)?.let { return it }
+            }
         }
+
+        val urlBuilder = buildTmdbUriBuilder(endpoint)
+        val params = mutableMapOf(
+            "api_key" to APIKEY,
+            "language" to effectiveLang,
+            "append_to_response" to "videos,images,alternative_titles",
+            "include_image_language" to "${getLang()},ru,en,null"
+        )
         params.forEach { (k, v) -> urlBuilder.appendQueryParameter(k, v) }
 
         val link = urlBuilder.build().toString()
@@ -180,9 +222,16 @@ object TMDB {
             val request = Request.Builder().url(link).build()
             httpClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) throw IOException("Unexpected code $response")
-                val body = response.body?.string()
-                if (body.isNullOrEmpty()) return null
-                getJson(body, Entity::class.java)?.also { fixEntity(it) }
+                val body = response.body.string()
+                if (body.isEmpty()) return null
+                getJson(body, Entity::class.java)?.also { entity ->
+                    fixEntity(entity)
+                    if (!isGenreRequest) {
+                        synchronized(entityCache) {
+                            entityCache.put(cacheKey, entity)
+                        }
+                    }
+                }
             }
         } catch (e: Exception) {
             e.printStackTrace()

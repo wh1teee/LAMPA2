@@ -7,20 +7,23 @@ import android.util.Log
 import android.webkit.JavascriptInterface
 import androidx.core.content.edit
 import androidx.core.net.toUri
-import com.google.gson.Gson
+import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONException
 import org.json.JSONObject
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import top.rootu.lampa.browser.Browser
 import top.rootu.lampa.channels.LampaChannels
 import top.rootu.lampa.channels.PluginChannels
 import top.rootu.lampa.channels.LampaChannels.updateChanByName
 import top.rootu.lampa.channels.WatchNext.updateWatchNext
 import top.rootu.lampa.content.LampaProvider
+import top.rootu.lampa.helpers.Helpers
 import top.rootu.lampa.helpers.Helpers.debugLog
 import top.rootu.lampa.helpers.Helpers.filterValidCubBookmarks
 import top.rootu.lampa.helpers.Helpers.isTvContentProviderAvailable
@@ -45,7 +48,7 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
 
     // Local properties
     private var lastEventHash: String? = null
-    private var reqResponse: MutableMap<String, String> = HashMap()
+    private val reqResponse = ConcurrentHashMap<String, String>()
     private var keys: Array<String?>? = null
     private var values: Array<String?>? = null
     private var dumped = false
@@ -54,6 +57,7 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
         // Constants
         private const val TAG = "AndroidJS"
         private const val UPDATE_DELAY = 5000L // in ms, wait before update TV channel
+        private const val MAX_PENDING_RESPONSES = 256
     }
 
     @JavascriptInterface
@@ -306,14 +310,14 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
         debugLog(TAG, "httpReq JSON $str")
         try {
             val jsonObject = JSONObject(str)
-            Http.disableH2(jsonObject.optBoolean("disableH2", false))
+            val disableH2 = jsonObject.optBoolean("disableH2", false)
 
             // Extract all parameters upfront
             val url = jsonObject.optString("url").takeIf { it.isNotEmpty() }
                 ?: throw IllegalArgumentException("URL cannot be empty")
             val data = jsonObject.opt("post_data")
             val returnHeaders = jsonObject.optBoolean("returnHeaders", false)
-             // Optional dataType: "base64" forces binary-safe response encoding.
+            // Optional dataType: "base64" forces binary-safe response encoding.
             val dataType = jsonObject.optString("dataType").takeIf { it.isNotEmpty() }
             val timeout = jsonObject.optInt("timeout", 15000).coerceAtLeast(1000)
             val headers = jsonObject.optJSONObject("headers")?.let {
@@ -325,7 +329,7 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
 
             if (data != null) {
                 if (data is String) {
-                    requestContent = data.toString()
+                    requestContent = data
                     contentType = try {
                         JSONObject(requestContent)
                         "application/json"
@@ -354,62 +358,52 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
             injectLampaClientHeaders(url, headers)
             val finalRequestContent = requestContent
             val finalHeaders = headers
+            val reqKey = returnI.toString()
 
-            class LampaAsyncTask : AsyncTask<Void?, Int?, String>("LampaAsyncTask") {
-                override fun doInBackground(vararg params: Void?): String {
-                    val http = Http()
-                    return try {
-                        val responseJSON = if (finalRequestContent.isEmpty()) {
-                            // GET
-                            http.Get(url, finalHeaders, timeout, dataType)
-                        } else {
-                            // POST
-                            http.Post(url, finalRequestContent, finalHeaders, timeout, dataType)
-                        }
-                        reqResponse[returnI.toString()] = if (returnHeaders) {
-                            responseJSON.toString()
-                        } else {
-                            responseJSON.optString("body", "")
-                        }
-                        "complite"
-                    } catch (e: Exception) {
-                        val errorJson = JSONObject().apply {
-                            putSafe("status", http.lastErrorCode)
-                            putSafe("message", "request error: ${e.message ?: "unknown error"}")
-                        }
-                        reqResponse[returnI.toString()] = errorJson.toString()
-                        debugLog(TAG, "error: ${e.message ?: "unknown error"}")
-                        "error"
+            mainActivity.lifecycleScope.launch(Dispatchers.IO) {
+                if (reqResponse.size > MAX_PENDING_RESPONSES) {
+                    reqResponse.clear()
+                }
+                val http = Http(disableH2)
+                val result = try {
+                    val responseJSON = if (finalRequestContent.isEmpty()) {
+                        http.Get(url, finalHeaders, timeout, dataType)
+                    } else {
+                        http.Post(url, finalRequestContent, finalHeaders, timeout, dataType)
                     }
+                    reqResponse[reqKey] = if (returnHeaders) {
+                        responseJSON.toString()
+                    } else {
+                        responseJSON.optString("body", "")
+                    }
+                    "complite"
+                } catch (e: Exception) {
+                    val errorJson = JSONObject().apply {
+                        putSafe("status", http.lastErrorCode)
+                        putSafe("message", "request error: ${e.message ?: "unknown error"}")
+                    }
+                    reqResponse[reqKey] = errorJson.toString()
+                    debugLog(TAG, "error: ${e.message ?: "unknown error"}")
+                    "error"
                 }
 
-                override fun onPostExecute(result: String?) {
-                    mainActivity.runOnUiThread {
-                        val js = ("Lampa.Android.httpCall("
-                                + returnI.toString() + ", '"
-                                + result
-                            ?.replace("\\", "\\\\")
-                            ?.replace("'", "\\'")
-                            ?.replace("\n", "\\\n")
-                                + "')")
-                        browser.evaluateJavascript(js) { debugLog(TAG, js) }
-                    }
+                withContext(Dispatchers.Main) {
+                    val escapedResult = result
+                        .replace("\\", "\\\\")
+                        .replace("'", "\\'")
+                        .replace("\n", "\\\n")
+                    val js = "Lampa.Android.httpCall($reqKey, '$escapedResult')"
+                    browser.evaluateJavascript(js) { debugLog(TAG, js) }
                 }
             }
-            LampaAsyncTask().execute()
         } catch (e: Exception) {
             e.printStackTrace()
         }
     }
 
     @JavascriptInterface
-    fun getResp(str: String): String? {
-        var string: String? = ""
-        if (reqResponse.containsKey(str)) {
-            string = reqResponse[str]
-            reqResponse.remove(str)
-        }
-        return string
+    fun getResp(str: String): String {
+        return reqResponse.remove(str) ?: ""
     }
 
     @JavascriptInterface
@@ -472,7 +466,7 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
             if (validBookmarks.isNotEmpty()) {
                 debugLog(TAG, "saveBookmarks - found ${validBookmarks.size} valid elements")
                 // Save the valid bookmarks
-                mainActivity.saveAccountBookmarks(Gson().toJson(validBookmarks))
+                mainActivity.saveAccountBookmarks(Helpers.gson.toJson(validBookmarks))
             } else {
                 Log.e(TAG, "saveBookmarks - no valid CUB bookmarks found in the JSON")
             }

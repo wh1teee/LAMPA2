@@ -403,12 +403,9 @@ class MainActivity : BaseActivity(),
         logDebug("onUserLeaveHint() isPlayerLaunching=$isPlayerLaunching")
         // Launching our external player also triggers onUserLeaveHint (startActivity sets the
         // userLeaving flag) BEFORE onPause. Skip pausing there so the RCH socket heartbeat
-        // survives playback. Real Home/leave (isPlayerLaunching == false) still pauses & clears.
+        // survives playback. Real Home/leave (isPlayerLaunching == false) still pauses timers.
         if (browserInitComplete && !(isPlayerLaunching && keepPlayerConnection))
-            browser?.apply {
-                pauseTimers()
-                clearCache(true)
-            }
+            browser?.pauseTimers()
         super.onUserLeaveHint()
     }
 
@@ -540,7 +537,9 @@ class MainActivity : BaseActivity(),
 
     private fun useSystemWebView() {
         setContentView(R.layout.activity_webview)
-        loaderView = findViewById(R.id.loaderView)
+        loaderView = findViewById<LottieAnimationView>(R.id.loaderView).apply {
+            setRenderMode(com.airbnb.lottie.RenderMode.HARDWARE)
+        }
         browser = SysView(this, R.id.webView)
         browser?.initialize()
     }
@@ -2098,10 +2097,11 @@ class MainActivity : BaseActivity(),
                     // Optional IETF language tag (as defined by BCP 47), for example "en-US" required for
                     // https://developer.android.com/reference/android/speech/RecognizerIntent#EXTRA_LANGUAGE
                     // so Locale with Country must be provided (en_US ru_RU etc)
-                    val locale = if (langTag.split("-").size >= 2) Locale(
-                        langTag.split("-")[0],
-                        langTag.split("-")[1]
-                    ) else if (langTag.isNotEmpty()) Locale(langTag) else Locale.getDefault()
+                    val locale = if (langTag.isNotEmpty()) {
+                        Locale.forLanguageTag(langTag)
+                    } else {
+                        Locale.getDefault()
+                    }
                     logDebug("appLang = $appLang")
                     logDebug("langTag = $langTag")
                     logDebug("locale = $locale")
@@ -2127,11 +2127,11 @@ class MainActivity : BaseActivity(),
                             onSpeech(str.toString().trim { it <= ' ' }, false, success)
                         }
 
-                        override fun onSpeechResult(res: String) {
-                            Log.i("speech", "result: $res")
-                            if (res.isEmpty())
+                        override fun onSpeechResult(result: String) {
+                            Log.i("speech", "result: $result")
+                            if (result.isEmpty())
                                 success = false
-                            onSpeech(res, true, success)
+                            onSpeech(result, true, success)
                         }
                     })
                 }
@@ -2565,13 +2565,13 @@ class MainActivity : BaseActivity(),
             }
             // Add default User-Agent only if not already specified
             if (!hasCustomUserAgent) {
-                HttpHelper.userAgent?.let {
+                HttpHelper.userAgent.let {
                     headers.add("User-Agent")
                     headers.add(it)
                     hasHeaders = true
                 }
             }
-        } ?: HttpHelper.userAgent?.let {  // No headers object case
+        } ?: HttpHelper.userAgent.let {  // No headers object case
             headers.add("User-Agent")
             headers.add(it)
             hasHeaders = true

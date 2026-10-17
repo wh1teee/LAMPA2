@@ -18,6 +18,7 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebView.setWebContentsDebuggingEnabled
 import androidx.webkit.WebResourceErrorCompat
+import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewClientCompat
 import androidx.webkit.WebViewFeature
 import top.rootu.lampa.App
@@ -50,6 +51,7 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
             isVerticalScrollBarEnabled = false
             isHorizontalScrollBarEnabled = false
             isScrollContainer = false
+            setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, true)
             setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
         }
         setFocus()
@@ -63,12 +65,15 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
             databaseEnabled = true
             loadWithOverviewMode = true
             useWideViewPort = true
-            cacheMode = WebSettings.LOAD_NO_CACHE
+            cacheMode = WebSettings.LOAD_DEFAULT
             setRenderPriority(WebSettings.RenderPriority.HIGH)
             setNeedInitialFocus(false)
+            mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+            mediaPlaybackRequiresUserGesture = false
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.OFF_SCREEN_PRERASTER)) {
+                WebSettingsCompat.setOffscreenPreRaster(this, true)
+            }
         }
-        settings?.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-        settings?.mediaPlaybackRequiresUserGesture = false
 
         browser?.webViewClient = object : WebViewClientCompat() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {

@@ -41,15 +41,28 @@ import top.rootu.lampa.models.WatchNextToAdd
 import java.util.Locale
 
 
+import androidx.core.content.FileProvider
+import java.io.File
+
 @Suppress("DEPRECATION")
 object Helpers {
+    val gson: Gson = Gson()
+
     // NOTE: as of Oreo you must also add the REQUEST_INSTALL_PACKAGES permission to your manifest. Otherwise it just silently fails
     @JvmStatic
     fun installPackage(context: Context?, packagePath: String?) {
         if (packagePath == null || context == null) {
             return
         }
-        val file = FileHelpers.getFileUri(context, packagePath) ?: return
+        val file = try {
+            FileProvider.getUriForFile(
+                context,
+                "${context.applicationContext.packageName}.update_provider",
+                File(packagePath)
+            )
+        } catch (_: IllegalArgumentException) {
+            null
+        } ?: return
         val intent = Intent(Intent.ACTION_VIEW)
         intent.setDataAndType(file, "application/vnd.android.package-archive")
         intent.flags =
@@ -103,7 +116,7 @@ object Helpers {
     // Helper function to serialize LampaCard to JSON
     private fun serializeCardToJson(card: LampaCard): String? {
         return try {
-            Gson().toJson(card)
+            gson.toJson(card)
         } catch (e: Exception) {
             Log.e("serializeCardToJson", "Failed to serialize card $card to JSON", e)
             null
@@ -218,7 +231,7 @@ object Helpers {
      */
     private fun parseStrict(json: String?): JsonElement? {
         return try {
-            Gson().getAdapter(JsonElement::class.java).fromJson(json)
+            gson.getAdapter(JsonElement::class.java).fromJson(json)
         } catch (_: Exception) {
             null
         }
@@ -235,21 +248,22 @@ object Helpers {
 
         val filteredList = mutableListOf<CubBookmark>()
 
-        // Parse the JSON string into a JsonElement
-        val jsonElement: JsonElement = Gson().fromJson(json, JsonElement::class.java)
+        val jsonElement: JsonElement = try {
+            gson.fromJson(json, JsonElement::class.java) ?: return emptyList()
+        } catch (_: Exception) {
+            return emptyList()
+        }
 
-        // Check if the JSON is an array
         if (jsonElement.isJsonArray) {
-            // Convert the JsonElement to a List of Maps
             (jsonElement as JsonArray).forEach { el ->
                 try {
-                    val bookmark = Gson().fromJson(el, CubBookmark::class.java)
-                    if (isValidLampaCard(Gson().toJson(bookmark.data)))
+                    val bookmark = gson.fromJson(el, CubBookmark::class.java)
+                    if (bookmark?.data != null)
                         filteredList.add(bookmark)
                     else
                         Log.e(
                             "filterValidCubBookmarks",
-                            "CubBookmark ${bookmark.card_id} data is invalid"
+                            "CubBookmark ${bookmark?.card_id} data is invalid"
                         )
                 } catch (e: Exception) {
                     Log.e("filterValidCubBookmarks", "CubBookmark $el error $e")
@@ -268,24 +282,19 @@ object Helpers {
     fun isValidLampaCard(json: String?): Boolean {
         if (json.isNullOrEmpty()) return false
         return try {
-            // Parse the JSON string into a LampaCard
-            Gson().fromJson(json, LampaCard::class.java)
-            // If all checks pass, the JSON is a valid LampaCard
-            true
+            gson.fromJson(json, LampaCard::class.java) != null
         } catch (e: JsonSyntaxException) {
-            // Invalid JSON syntax
             Log.e("isValidLampaCard", "JsonSyntaxException: $e")
             false
         } catch (e: Exception) {
             Log.e("isValidLampaCard", "Exception: $e")
-            // Other errors (e.g., type casting issues)
             false
         }
     }
 
     fun <T> getJson(json: String?, cls: Class<T>?): T? {
         return try {
-            Gson().fromJson(json, cls)
+            gson.fromJson(json, cls)
         } catch (e: Exception) {
             if (BuildConfig.DEBUG) Log.d("*****", "Error getJson $json as ${cls!!.name}: $e")
             null
