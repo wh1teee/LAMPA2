@@ -1,6 +1,7 @@
 package top.rootu.lampa.channels
 
 import android.annotation.SuppressLint
+import android.content.ContentProviderOperation
 import android.util.Log
 import androidx.core.net.toUri
 import androidx.tvprovider.media.tv.Channel
@@ -83,6 +84,36 @@ object ChannelManager {
     }
 
     @SuppressLint("RestrictedApi")
+    internal fun replacePluginChannel(request: PluginChannelRequest) {
+        synchronized(lock) {
+            require(request.name.startsWith("plugin:"))
+            request.items.forEach { it.fixCard() }
+            val existing = ChannelHelper.get(request.name)
+            // Clearing an unpublished channel must not create an empty launcher row.
+            if (existing == null && request.items.isEmpty()) return
+            val channel = existing ?: run {
+                ChannelHelper.add(request.name, requireNotNull(request.title))
+                ChannelHelper.get(request.name)
+            } ?: error("Channel creation failed")
+            val operations = arrayListOf<ContentProviderOperation>()
+            request.title?.let { title ->
+                val metadata = Channel.Builder().setDisplayName(title).build().toContentValues()
+                operations.add(ContentProviderOperation.newUpdate(TvContractCompat.buildChannelUri(channel.id))
+                    .withValues(metadata).build())
+            }
+            operations.add(ContentProviderOperation.newDelete(
+                TvContractCompat.buildPreviewProgramsUriForChannel(channel.id)).build())
+            request.items.forEachIndexed { index, card ->
+                val program = createPreviewProgram(channel.id, request.name, card, request.items.size - index)
+                    ?: error("Invalid program")
+                operations.add(ContentProviderOperation.newInsert(TvContractCompat.PreviewPrograms.CONTENT_URI)
+                    .withValues(program.toContentValues()).build())
+            }
+            // TvProvider applies its batch in one database transaction. Do not clear separately.
+            App.context.contentResolver.applyBatch(TvContractCompat.AUTHORITY, operations)
+        }
+    }
+
     fun deleteFromChannel(channelId: Long, movieId: String) {
         findProgramByMovieId(channelId, movieId)?.let { program ->
             removeProgram(program.id)

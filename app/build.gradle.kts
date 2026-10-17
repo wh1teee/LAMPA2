@@ -81,7 +81,7 @@ android {
                 keyPassword = keystoreProperties.getProperty("keyPassword")
             } else {
                 val keystoreFile = System.getenv("KEYSTORE_FILE")
-                if (keystoreFile != null) {
+                if (!keystoreFile.isNullOrBlank() && file(keystoreFile).exists()) {
                     storeFile = file(keystoreFile)
                     storePassword = System.getenv("KEYSTORE_PASSWORD")
                     keyAlias = System.getenv("RELEASE_SIGN_KEY_ALIAS")
@@ -99,8 +99,10 @@ android {
                 "proguard-rules.pro"
             )
             val releaseSigning = signingConfigs.getByName("release")
-            if (releaseSigning.storeFile != null) {
-                signingConfig = releaseSigning
+            signingConfig = if (releaseSigning.storeFile?.exists() == true) {
+                releaseSigning
+            } else {
+                signingConfigs.getByName("debug")
             }
         }
     }

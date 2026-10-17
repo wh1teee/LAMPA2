@@ -1,0 +1,205 @@
+name: Sync Upstreams & Auto-Release
+
+on:
+  schedule:
+    # Runs every 6 hours automatically
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      force_release:
+        description: "Force build and publish a new release even if no new upstream commits exist"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: sync-upstreams
+  cancel-in-progress: false
+
+jobs:
+  sync-and-release:
+    name: Sync piblynk/LAMPA2 + lampa-app/LAMPA & Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v6
+        with:
+          java-version: '25'
+          distribution: temurin
+          cache: gradle
+
+      - name: Restore keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/keystore.jks"
+            echo "KEYSTORE_FILE=$RUNNER_TEMP/keystore.jks" >> "$GITHUB_ENV"
+          fi
+
+      - name: Configure Git & Fetch Upstreams
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git remote add piblynk https://github.com/piblynk/LAMPA2.git || git remote set-url piblynk https://github.com/piblynk/LAMPA2.git
+          git remote add lampa https://github.com/lampa-app/LAMPA.git || git remote set-url lampa https://github.com/lampa-app/LAMPA.git
+
+          git fetch --tags origin
+          git fetch piblynk main
+          git fetch lampa main
+
+          PIBLYNK_AHEAD=$(git rev-list --count HEAD..piblynk/main)
+          LAMPA_AHEAD=$(git rev-list --count HEAD..lampa/main)
+
+          echo "piblynk/LAMPA2 commits ahead: $PIBLYNK_AHEAD"
+          echo "lampa-app/LAMPA commits ahead: $LAMPA_AHEAD"
+
+          echo "PIBLYNK_AHEAD=$PIBLYNK_AHEAD" >> "$GITHUB_ENV"
+          echo "LAMPA_AHEAD=$LAMPA_AHEAD" >> "$GITHUB_ENV"
+
+      - name: Merge Upstreams, Create & Auto-Merge PR
+        id: sync
+        if: env.PIBLYNK_AHEAD != '0' || env.LAMPA_AHEAD != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          RELEASE_SIGN_KEY_ALIAS: ${{ secrets.RELEASE_SIGN_KEY_ALIAS }}
+          RELEASE_SIGN_KEY_PASSWORD: ${{ secrets.RELEASE_SIGN_KEY_PASSWORD }}
+        run: |
+          set -e
+          SYNC_BRANCH="chore/UPSTREAM-sync-$(date -u +%Y%m%d-%H%M%S)"
+          git checkout -b "$SYNC_BRANCH" origin/main
+
+          MERGE_CONFLICT=0
+          SUMMARY=""
+
+          if [ "$PIBLYNK_AHEAD" != "0" ]; then
+            COMMITS_PIBLYNK=$(git log --oneline HEAD..piblynk/main)
+            SUMMARY="${SUMMARY}### Changes from \`piblynk/LAMPA2\` (${PIBLYNK_AHEAD} commits)"$'\n'"\`\`\`"$'\n'"${COMMITS_PIBLYNK}"$'\n'"\`\`\`"$'\n\n'
+            if ! git merge --no-edit piblynk/main; then
+              MERGE_CONFLICT=1
+              CONFLICT_FILES=$(git diff --name-only --diff-filter=U || true)
+              git merge --abort || true
+            fi
+          fi
+
+          if [ "$MERGE_CONFLICT" = "0" ] && [ "$LAMPA_AHEAD" != "0" ]; then
+            COMMITS_LAMPA=$(git log --oneline HEAD..lampa/main)
+            SUMMARY="${SUMMARY}### Changes from \`lampa-app/LAMPA\` (${LAMPA_AHEAD} commits)"$'\n'"\`\`\`"$'\n'"${COMMITS_LAMPA}"$'\n'"\`\`\`"$'\n\n'
+            if ! git merge --no-edit lampa/main; then
+              MERGE_CONFLICT=1
+              CONFLICT_FILES=$(git diff --name-only --diff-filter=U || true)
+              git merge --abort || true
+            fi
+          fi
+
+          if [ "$MERGE_CONFLICT" = "1" ]; then
+            echo "Merge conflict detected in: $CONFLICT_FILES"
+            echo "synced=false" >> "$GITHUB_OUTPUT"
+            ISSUE_TITLE="[Sync Conflict] Manual merge needed from upstream"
+            EXISTING_ISSUE=$(gh issue list --search "$ISSUE_TITLE in:title" --state open --json number --jq '.[0].number // empty')
+            BODY="Automated upstream sync encountered merge conflicts in:"$'\n'"\`\`\`"$'\n'"${CONFLICT_FILES}"$'\n'"\`\`\`"$'\n\n'"${SUMMARY}"
+            if [ -z "$EXISTING_ISSUE" ]; then
+              gh issue create --title "$ISSUE_TITLE" --body "$BODY"
+            fi
+            exit 0
+          fi
+
+          # Clean up any legacy Crosswalk annotations brought in from lampa-app/LAMPA
+          MODIFIED=0
+          while IFS= read -r -d '' ktfile; do
+            if grep -q "org\.xwalk\.core" "$ktfile"; then
+              sed -i '/@org\.xwalk\.core\.JavascriptInterface/d' "$ktfile"
+              sed -i '/import org\.xwalk\.core/d' "$ktfile"
+              git add "$ktfile"
+              MODIFIED=1
+            fi
+          done < <(find app/src -name "*.kt" -print0)
+
+          # Ensure our fork's self-update URL and workflows remain intact
+          git checkout origin/main -- .github/workflows/android.yml .github/workflows/sync-upstreams.yml README.md
+          if grep -q "repos/piblynk/LAMPA2/releases" app/src/main/java/top/rootu/lampa/helpers/Updater.kt; then
+            sed -i 's|repos/piblynk/LAMPA2/releases|repos/${BuildConfig.REPO_ID}/releases|g' app/src/main/java/top/rootu/lampa/helpers/Updater.kt
+            git add app/src/main/java/top/rootu/lampa/helpers/Updater.kt
+          fi
+
+          if ! git diff --cached --quiet; then
+            git commit --amend --no-edit
+          fi
+
+          # Verify build and unit tests before merging PR
+          chmod +x gradlew
+          ./gradlew testLiteDebugUnitTest assembleLiteRelease assembleFullRelease --stacktrace
+
+          # Push sync branch, create PR, and auto-merge into main
+          git push -u origin "$SYNC_BRANCH"
+          PR_URL=$(gh pr create \
+            --base main \
+            --head "$SYNC_BRANCH" \
+            --title "chore(sync): merge upstream updates ($(date -u +%Y-%m-%d))" \
+            --body "$SUMMARY")
+          echo "Created PR: $PR_URL"
+
+          gh pr merge "$PR_URL" --merge --delete-branch
+          git checkout main
+          git pull origin main
+          echo "synced=true" >> "$GITHUB_OUTPUT"
+
+      - name: Build & Publish New Release
+        id: release
+        if: steps.sync.outputs.synced == 'true' || github.event.inputs.force_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          RELEASE_SIGN_KEY_ALIAS: ${{ secrets.RELEASE_SIGN_KEY_ALIAS }}
+          RELEASE_SIGN_KEY_PASSWORD: ${{ secrets.RELEASE_SIGN_KEY_PASSWORD }}
+        run: |
+          set -e
+          git fetch --tags origin
+
+          LATEST_TAG=$(git tag -l "v[0-9]*.[0-9]*.[0-9]*" --sort=-v:refname | head -n 1)
+          if [ -z "$LATEST_TAG" ]; then
+            LATEST_TAG="v2.1.1"
+          fi
+          VERSION="${LATEST_TAG#v}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+          NEXT_PATCH=$((PATCH + 1))
+          NEW_TAG="v${MAJOR}.${MINOR}.${NEXT_PATCH}"
+
+          echo "Tagging new release: $NEW_TAG (previous: $LATEST_TAG)"
+          git tag "$NEW_TAG"
+          git push origin "$NEW_TAG"
+
+          chmod +x gradlew
+          # Rebuild after tagging so BuildConfig.VERSION_NAME has the exact release tag
+          ./gradlew assembleLiteRelease assembleFullRelease --stacktrace
+
+          echo "new_tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Release APKs
+        uses: softprops/action-gh-release@v3
+        if: steps.release.outputs.new_tag != ''
+        with:
+          tag_name: ${{ steps.release.outputs.new_tag }}
+          name: ${{ steps.release.outputs.new_tag }}
+          files: |
+            app/build/outputs/apk/lite/release/app-lite-release.apk
+            app/build/outputs/apk/full/release/app-full-release.apk
+          draft: false
+          make_latest: true
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

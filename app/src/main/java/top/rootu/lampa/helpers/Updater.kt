@@ -27,7 +27,7 @@ import javax.net.ssl.SSLSocketFactory
 
 object Updater {
     private const val RELEASE_LINK =
-        "https://api.github.com/repos/piblynk/LAMPA2/releases"
+        "https://api.github.com/repos/${BuildConfig.REPO_ID}/releases"
     private var releases: Releases? = null
     private var newVersion: Release? = null
 
