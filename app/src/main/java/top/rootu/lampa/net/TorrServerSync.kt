@@ -213,11 +213,21 @@ object TorrServerSync {
     }
 
     /**
-     * Marks one or more TorrServer stream URLs as viewed in TorrServer's `/viewed` database.
+     * Marks one or more TorrServer stream URLs as viewed in TorrServer's `/viewed` database,
+     * optionally syncing each episode's playback `timecode` (in seconds) when `torrserver_tracktimecode` is used.
      */
-    fun markViewedAsync(urls: Collection<String>, headers: Array<String>? = null) {
-        val refs = urls.mapNotNull { extractRef(it) }.distinct()
-        if (refs.isEmpty()) return
+    @JvmOverloads
+    fun markViewedAsync(
+        urls: Collection<String>,
+        headers: Array<String>? = null,
+        timecodesSec: Map<String, Int> = emptyMap()
+    ) {
+        val entries = urls.mapNotNull { rawUrl ->
+            extractRef(rawUrl)?.let { ref ->
+                ref to (timecodesSec[rawUrl] ?: 0)
+            }
+        }.distinctBy { "${it.first.hash}:${it.first.fileIndex}" }
+        if (entries.isEmpty()) return
 
         scope.launch {
             val client = HttpHelper.client.newBuilder()
@@ -225,12 +235,15 @@ object TorrServerSync {
                 .readTimeout(4, TimeUnit.SECONDS)
                 .build()
 
-            for (ref in refs) {
+            for ((ref, timecodeSec) in entries) {
                 try {
                     val payload = JSONObject().apply {
                         put("action", "set")
                         put("hash", ref.hash)
                         put("file_index", ref.fileIndex)
+                        if (timecodeSec > 0) {
+                            put("timecode", timecodeSec)
+                        }
                     }.toString()
 
                     val reqBuilder = Request.Builder()
@@ -242,11 +255,43 @@ object TorrServerSync {
                     client.newCall(reqBuilder.build()).execute().use { response ->
                         debugLog(
                             TAG,
-                            "Marked viewed in TorrServer [hash=${ref.hash}, index=${ref.fileIndex}, code=${response.code}]"
+                            "Marked viewed in TorrServer [hash=${ref.hash}, index=${ref.fileIndex}, timecode=$timecodeSec, code=${response.code}]"
                         )
                     }
                 } catch (e: Exception) {
                     debugLog(TAG, "TorrServer /viewed sync skipped: ${e.message}")
+                }
+            }
+        }
+    }
+
+    /**
+     * Probes local TorrServer endpoints (`127.0.0.1:8090` and `10.0.2.2:8090`) on startup.
+     * If a running TorrServer MatriX instance responds to `/echo`, invokes [onFound] with its base URL.
+     */
+    fun probeLocalTorrServerAsync(onFound: (String) -> Unit) {
+        scope.launch {
+            val client = HttpHelper.client.newBuilder()
+                .connectTimeout(1500, TimeUnit.MILLISECONDS)
+                .readTimeout(1500, TimeUnit.MILLISECONDS)
+                .build()
+            val candidates = listOf("http://127.0.0.1:8090", "http://10.0.2.2:8090")
+            for (baseUrl in candidates) {
+                try {
+                    val reqBuilder = Request.Builder()
+                        .url("$baseUrl/echo")
+                        .get()
+                    applyAuthHeaders(reqBuilder, null)
+                    client.newCall(reqBuilder.build()).execute().use { resp ->
+                        val body = resp.body.string().trim()
+                        if (resp.isSuccessful && body.startsWith("MatriX", ignoreCase = true)) {
+                            debugLog(TAG, "Auto-discovered local TorrServer at $baseUrl ($body)")
+                            top.rootu.lampa.AndroidJS.torrserverUrl = baseUrl
+                            onFound(baseUrl)
+                            return@launch
+                        }
+                    }
+                } catch (_: Exception) {
                 }
             }
         }

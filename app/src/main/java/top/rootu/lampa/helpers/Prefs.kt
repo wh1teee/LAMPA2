@@ -66,7 +66,9 @@ object Prefs {
 
     // Extension properties for app settings
     var Context.appUrl: String
-        get() = appPrefs.getString(APP_URL, BuildConfig.defaultAppUrl) ?: ""
+        get() = appPrefs.getString(APP_URL, BuildConfig.defaultAppUrl)
+            ?.takeIf { it.isNotBlank() }
+            ?: BuildConfig.defaultAppUrl.ifEmpty { "http://lampa.mx" }
         set(url) = appPrefs.edit { putString(APP_URL, url) }
 
     var Context.appPlayer: String?
@@ -95,8 +97,8 @@ object Prefs {
         set(browser) = appPrefs.edit { putString(APP_BROWSER, browser) }
 
     var Context.appLang: String
-        get() = appPrefs.getString(APP_LANG, Locale.getDefault().language)
-            ?: Locale.getDefault().language
+        get() = appPrefs.getString(APP_LANG, "ru")
+            ?: "ru"
         set(lang) = appPrefs.edit { putString(APP_LANG, lang) }
 
     var Context.tmdbApiUrl: String
@@ -343,6 +345,12 @@ object Prefs {
         val timestamp: Long
     )
 
+    private val DEFAULT_URL_MIRRORS = listOf(
+        "http://lampa.mx",
+        "https://lampa.mx",
+        "http://cub.red"
+    )
+
     // Extension property to get URL history
     val Context.urlHistory: List<String>
         get() {
@@ -350,6 +358,7 @@ object Prefs {
             return parseUrlHistory(json)
                 .sortedByDescending { it.timestamp } // Sort by timestamp in descending order
                 .map { it.input } // Extract the URL strings
+                .ifEmpty { DEFAULT_URL_MIRRORS }
         }
 
     // Extension function to add a URL to history
