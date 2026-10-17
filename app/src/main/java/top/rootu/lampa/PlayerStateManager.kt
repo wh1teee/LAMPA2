@@ -20,11 +20,38 @@ import java.util.concurrent.TimeUnit
  * Handles both in-memory caching and persistent storage of playback states.
  */
 class PlayerStateManager(context: Context) {
-    private companion object {
+    companion object {
         // const val PREFS_NAME = "player_state_prefs"
-        const val MAX_CACHED_STATES = 5
+        const val MAX_CACHED_STATES = 16
         const val MAX_DAYS_CACHE = 30  // Days to store states
         const val TAG = "PlayerStateManager"
+        val SEASON_EPISODE_REGEX =
+            Regex("""(?i)(?:s(\d{1,2})\s*[._\-x]?\s*e(\d{1,3})|\b(\d{1,2})x(\d{2,3})\b)""")
+
+        internal fun inferSeasonAndEpisode(title: String?, url: String? = null): Pair<Int?, Int?> {
+            val candidates = listOfNotNull(
+                title,
+                url?.let {
+                    try {
+                        java.net.URLDecoder.decode(
+                            it.substringBefore('?').substringAfterLast('/').replace("+", "%2B"),
+                            java.nio.charset.StandardCharsets.UTF_8.name()
+                        )
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+            )
+            for (text in candidates) {
+                val match = SEASON_EPISODE_REGEX.find(text) ?: continue
+                val s = (match.groupValues[1].ifEmpty { match.groupValues[3] }).toIntOrNull()
+                val e = (match.groupValues[2].ifEmpty { match.groupValues[4] }).toIntOrNull()
+                if (s != null && e != null && s > 0 && e > 0) {
+                    return s to e
+                }
+            }
+            return null to null
+        }
     }
 
     private val prefs =
@@ -162,7 +189,7 @@ class PlayerStateManager(context: Context) {
         val key = generateActivityKey(activityJson)
         val validatedStartIndex = startIndex.coerceIn(0, playlist.size - 1)
         val updatedExtras = extras.toMutableMap().apply {
-            card?.let { put(LAMPA_CARD_KEY, Gson().toJson(it)) }
+            card?.let { put(LAMPA_CARD_KEY, top.rootu.lampa.helpers.Helpers.gson.toJson(it)) }
         }
         val state = PlaybackState(
             activityKey = key,
@@ -702,23 +729,34 @@ class PlayerStateManager(context: Context) {
      * @throws IllegalArgumentException if required fields are missing
      */
     private fun JSONObject.toPlaylistItem(): PlaylistItem {
+        val rawUrl = try { // Required field
+            getString("url").takeIf { it.isNotBlank() }
+                ?: throw JSONException("Missing or empty URL")
+        } catch (e: JSONException) {
+            throw IllegalArgumentException("Invalid playlist item: URL required", e)
+        }
+        val rawTitle = optString("title").takeIf { it.isNotEmpty() }
+        val explicitSeason = if (has("season") && !isNull("season")) optInt("season").takeIf { it > 0 } else null
+        val explicitEpisode = if (has("episode") && !isNull("episode")) optInt("episode").takeIf { it > 0 } else null
+        val (inferredSeason, inferredEpisode) = if (explicitSeason == null || explicitEpisode == null) {
+            inferSeasonAndEpisode(rawTitle, rawUrl)
+        } else {
+            null to null
+        }
+
         return PlaylistItem(
-            url = try { // Required field
-                getString("url").takeIf { it.isNotBlank() }
-                    ?: throw JSONException("Missing or empty URL")
-            } catch (e: JSONException) {
-                throw IllegalArgumentException("Invalid playlist item: URL required", e)
-            },
-            title = optString("title").takeIf { it.isNotEmpty() },
+            url = rawUrl,
+            title = rawTitle,
             thumbnail = optString("thumbnail").takeIf { it.isNotEmpty() },
             timeline = optJSONObject("timeline")?.toTimeline(),
             quality = optJSONObject("quality")?.toQualityMap(),
             subtitles = optJSONArray("subtitles")?.toSubtitles(),
-            segments = optJSONObject("segments")?.toString(),
+            segments = optJSONObject("segments")?.toString()
+                ?: optString("segments").takeIf { it.isNotEmpty() },
 
-            // Optional TV episode info — absent for movies / single files.
-            season = if (has("season") && !isNull("season")) optInt("season") else null,
-            episode = if (has("episode") && !isNull("episode")) optInt("episode") else null,
+            // Optional TV episode info — inferred from title/filename if absent in torrent metadata.
+            season = explicitSeason ?: inferredSeason,
+            episode = explicitEpisode ?: inferredEpisode,
 
             // IMDb id: a persisted flat field, else from the card (data.card.imdb_id) if present.
             imdbId = optString("imdb_id").takeIf { it.isNotEmpty() }
@@ -784,6 +822,7 @@ class PlayerStateManager(context: Context) {
         return JSONObject().apply {
             put("url", url)
             title?.let { put("title", it) }
+            thumbnail?.let { put("thumbnail", it) }
             timeline?.let { put("timeline", it.toJson()) }
             quality?.let { qual ->
                 put("quality", JSONObject().apply {
@@ -795,6 +834,7 @@ class PlayerStateManager(context: Context) {
                     subs.forEach { put(it.toJson()) }
                 })
             }
+            segments?.let { put("segments", it) }
             season?.let { put("season", it) }
             episode?.let { put("episode", it) }
             imdbId?.let { put("imdb_id", it) }

@@ -10,6 +10,8 @@ import androidx.core.net.toUri
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -45,6 +47,9 @@ import kotlin.system.exitProcess
 class AndroidJS(private val mainActivity: MainActivity, private val browser: Browser) {
 
     private val store: SharedPreferences = App.context.storagePrefs
+    private val memoryStore = ConcurrentHashMap<String, String>()
+    private val channelScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val channelUpdateJobs = ConcurrentHashMap<String, Job>()
 
     // Local properties
     private var lastEventHash: String? = null
@@ -53,11 +58,27 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
     private var values: Array<String?>? = null
     private var dumped = false
 
+    init {
+        store.all?.forEach { (k, v) ->
+            if (k != null && v is String) {
+                memoryStore[k] = v
+            }
+        }
+    }
+
     companion object {
         // Constants
         private const val TAG = "AndroidJS"
         private const val UPDATE_DELAY = 5000L // in ms, wait before update TV channel
         private const val MAX_PENDING_RESPONSES = 256
+    }
+
+    private fun scheduleChannelUpdate(channelKey: String, block: suspend () -> Unit) {
+        channelUpdateJobs.remove(channelKey)?.cancel()
+        channelUpdateJobs[channelKey] = channelScope.launch {
+            delay(UPDATE_DELAY)
+            block()
+        }
     }
 
     @JavascriptInterface
@@ -256,8 +277,7 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
             }
         }
         // Force update Recs to filter viewed
-        CoroutineScope(Dispatchers.Default).launch {
-            delay(UPDATE_DELAY)
+        scheduleChannelUpdate(LampaProvider.RECS) {
             LampaChannels.updateRecsChannel()
         }
 
@@ -422,8 +442,7 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
         mainActivity.runOnUiThread { mainActivity.runPlayer(jsonObject) }
 
         // Force update Recs to filter viewed
-        CoroutineScope(Dispatchers.Default).launch {
-            delay(UPDATE_DELAY)
+        scheduleChannelUpdate(LampaProvider.RECS) {
             LampaChannels.updateRecsChannel()
         }
     }
@@ -460,7 +479,7 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
     @JavascriptInterface
     fun saveBookmarks(json: String?) {
         debugLog(TAG, "saveBookmarks fired!")
-        CoroutineScope(Dispatchers.Default).launch {
+        channelScope.launch {
             // Filter out invalid CubBookmark objects
             val validBookmarks = filterValidCubBookmarks(json)
             if (validBookmarks.isNotEmpty()) {
@@ -487,16 +506,13 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
                 LampaProvider.SCHD,
                 LampaProvider.CONT,
                 LampaProvider.THRW -> {
-                    CoroutineScope(Dispatchers.Default).launch {
-                        delay(UPDATE_DELAY)
+                    scheduleChannelUpdate(where) {
                         updateChanByName(where)
                     }
                 }
 
                 LampaProvider.LATE -> {
-                    // Handle add to Watch Next from Lampa
-                    CoroutineScope(Dispatchers.Default).launch {
-                        delay(UPDATE_DELAY)
+                    scheduleChannelUpdate(LampaProvider.LATE) {
                         updateWatchNext()
                     }
                 }
@@ -517,13 +533,20 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
     @Synchronized
     fun dump() {
         check(!dumped) { "already dumped" }
-        val map = store.all
-        val size = map?.size ?: 0
+        if (memoryStore.isEmpty()) {
+            store.all?.forEach { (k, v) ->
+                if (k != null && v is String) {
+                    memoryStore[k] = v
+                }
+            }
+        }
+        val snapshot = memoryStore.entries.toList()
+        val size = snapshot.size
         keys = arrayOfNulls(size)
         values = arrayOfNulls(size)
-        for ((cur, key) in map!!.keys.withIndex()) {
-            keys!![cur] = key
-            values!![cur] = (map[key] as String?)!!
+        for ((cur, entry) in snapshot.withIndex()) {
+            keys!![cur] = entry.key
+            values!![cur] = entry.value
         }
         dumped = true
     }
@@ -550,21 +573,29 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
     }
 
     @JavascriptInterface
-    @Synchronized
     operator fun get(key: String?): String? {
-        return store.getString(key, null)
+        if (key == null) return null
+        return memoryStore[key] ?: store.getString(key, null)?.also { memoryStore[key] = it }
     }
 
     @JavascriptInterface
     @Synchronized
     operator fun set(key: String?, value: String?) {
         check(!dumped) { "already dumped" }
+        if (key != null) {
+            if (value != null) {
+                memoryStore[key] = value
+            } else {
+                memoryStore.remove(key)
+            }
+        }
         store.edit { putString(key, value) }
     }
 
     @JavascriptInterface
     @Synchronized
     fun clear() {
+        memoryStore.clear()
         store.edit { clear() }
         keys = null
         values = null

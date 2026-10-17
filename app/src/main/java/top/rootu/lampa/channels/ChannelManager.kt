@@ -68,14 +68,9 @@ object ChannelManager {
                 ChannelHelper.get(name)
             } ?: return@synchronized
 
-            // Update channel metadata
-            updateChannelMetadata(channel, displayName)
-
-            // Add programs to the channel
-            if (!Coroutines.running("update_channel_$name")) { // fix duplicates
+            if (!Coroutines.running("update_channel_$name")) {
                 Coroutines.launch("update_channel_$name") {
-                    clearChannelPrograms(channel.id)
-                    addProgramsToChannel(channel.id, name, list)
+                    replaceChannelProgramsBatch(channel, displayName, name, list)
                 }
             } else {
                 if (BuildConfig.DEBUG) Log.d(TAG, "scope update_channel_$name already active!")
@@ -126,44 +121,47 @@ object ChannelManager {
         }
     }
 
-    private fun updateChannelMetadata(channel: Channel, displayName: String) {
+    @SuppressLint("RestrictedApi")
+    private fun replaceChannelProgramsBatch(
+        channel: Channel,
+        displayName: String,
+        provName: String,
+        list: List<LampaCard>
+    ) {
+        val operations = ArrayList<ContentProviderOperation>(list.size + 2)
         val channelValues = Channel.Builder()
             .setDisplayName(displayName)
             .setType(TvContractCompat.Channels.TYPE_PREVIEW)
-            .setAppLinkIntentUri("lampa://${BuildConfig.APPLICATION_ID}/update_channel/${channel.data}".toUri()) // channel.internalProviderId is null
+            .setAppLinkIntentUri("lampa://${BuildConfig.APPLICATION_ID}/update_channel/${channel.data}".toUri())
             .build()
             .toContentValues()
 
-        App.context.contentResolver.update(
-            TvContractCompat.buildChannelUri(channel.id),
-            channelValues, null, null
+        operations.add(
+            ContentProviderOperation.newUpdate(TvContractCompat.buildChannelUri(channel.id))
+                .withValues(channelValues)
+                .build()
         )
-    }
-
-    private fun clearChannelPrograms(channelId: Long) {
-        App.context.contentResolver.delete(
-            TvContractCompat.buildPreviewProgramsUriForChannel(channelId),
-            null, null
+        operations.add(
+            ContentProviderOperation.newDelete(
+                TvContractCompat.buildPreviewProgramsUriForChannel(channel.id)
+            ).build()
         )
-    }
 
-    @SuppressLint("RestrictedApi")
-    private fun addProgramsToChannel(channelId: Long, provName: String, list: List<LampaCard>) {
-        list.forEachIndexed { index, card ->
-            val program = createPreviewProgram(channelId, provName, card, list.size - index)
-            program?.let {
-                if (existsInChannel(channelId, it.internalProviderId)) {
-                    if (BuildConfig.DEBUG) Log.d(
-                        TAG,
-                        "Program ${it.internalProviderId} already exists in channel $channelId, removing..."
-                    )
-                    deleteFromChannel(channelId, it.internalProviderId)
-                }
-                App.context.contentResolver.insert(
-                    TvContractCompat.buildPreviewProgramsUriForChannel(channelId),
-                    it.toContentValues()
-                )
-            }
+        val uniqueCards = list.distinctBy { it.id ?: "${it.title}_${it.release_year}" }
+        val total = uniqueCards.size
+        uniqueCards.forEachIndexed { index, card ->
+            val program = createPreviewProgram(channel.id, provName, card, total - index) ?: return@forEachIndexed
+            operations.add(
+                ContentProviderOperation.newInsert(
+                    TvContractCompat.buildPreviewProgramsUriForChannel(channel.id)
+                ).withValues(program.toContentValues()).build()
+            )
+        }
+
+        try {
+            App.context.contentResolver.applyBatch(TvContractCompat.AUTHORITY, operations)
+        } catch (e: Exception) {
+            Log.e(TAG, "Batch update failed for channel $provName: ${e.message}")
         }
     }
 
