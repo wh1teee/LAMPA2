@@ -731,24 +731,43 @@ class MainActivity : BaseActivity(),
                     runVoidJsFunc("Lampa.Timeline.update", playerStateManager.convertTimelineToJsonString(it))
                 }
             }
-            markOpened(playlist, positions, index)
-            val ended = playlist[index].timeline?.percent == 100
-            Log.i(TAG, "Player report [index=$index, ended=$ended]")
+            markOpened(playlist, positions, index, getHeadersFromState(state))
+            val itemEnded = playlist[index].timeline?.percent == 100
+            val hasNextEpisode = itemEnded && (index + 1) in playlist.indices
+            val targetIndex = if (hasNextEpisode) index + 1 else index
+            val targetPositionMs = if (hasNextEpisode) {
+                0L
+            } else {
+                positions.optInt(index, 0).coerceAtLeast(0) * 1000L
+            }
+            val targetUrl = if (hasNextEpisode) {
+                playlist[targetIndex].url
+            } else {
+                report.optString("uri").takeIf { it.isNotEmpty() } ?: playlist[index].url
+            }
+            if (hasNextEpisode) {
+                top.rootu.lampa.net.TorrServerSync.preloadEpisodeAsync(
+                    targetUrl,
+                    getHeadersFromState(state)
+                )
+            }
+            val allEnded = itemEnded && !hasNextEpisode
+            Log.i(TAG, "Player report [index=$index, itemEnded=$itemEnded, nextIndex=$targetIndex, allEnded=$allEnded]")
             val saved = playerStateManager.saveState(
                 activityJson = key,
                 playlist = playlist,
-                currentIndex = index,
-                currentUrl = report.optString("uri").takeIf { it.isNotEmpty() } ?: playlist[index].url,
-                currentPosition = positions.optInt(index, 0).coerceAtLeast(0) * 1000L,
-                startIndex = state.startIndex,
+                currentIndex = targetIndex,
+                currentUrl = targetUrl,
+                currentPosition = targetPositionMs,
+                startIndex = if (hasNextEpisode) targetIndex else state.startIndex,
                 extras = state.extras
             )
             // Watch Next by this launch's card and activity
             if (isTvContentProviderAvailable && card != null) launch(Dispatchers.Default) {
                 try {
                     when {
-                        ended -> WatchNext.removeContinueWatch(card)
-                        saved.currentItem != null && !saved.isEnded -> WatchNext.addLastPlayed(card, key)
+                        allEnded -> WatchNext.removeContinueWatch(card)
+                        saved.currentItem != null -> WatchNext.addLastPlayed(card, key)
                     }
                 } catch (e: Exception) {
                     logDebug("Error in Watch Next: ${e.javaClass.simpleName} - ${e.message}")
@@ -770,13 +789,22 @@ class MainActivity : BaseActivity(),
     private fun markOpened(
         playlist: List<PlayerStateManager.PlaylistItem>,
         positions: JSONArray,
-        current: Int
+        current: Int,
+        headers: Array<String>? = null
     ) {
         val opened = JSONArray()
+        val openedUrls = mutableListOf<String>()
         (playlist.indices.filter { it != current } + current).forEach { i ->
             if (positions.optInt(i, -1) <= 0) return@forEach // never opened, or opened and not played
             opened.put(playlist[i].url)
+            openedUrls.add(playlist[i].url)
         }
+        if (opened.length() == 0) return
+        top.rootu.lampa.net.TorrServerSync.markViewedAsync(openedUrls, headers)
+        notifyLampaPlaylistOpened(opened)
+    }
+
+    private fun notifyLampaPlaylistOpened(opened: JSONArray) {
         if (opened.length() == 0) return
         runVoidJsFunc(
             "(function (opened) {" +
@@ -872,13 +900,17 @@ class MainActivity : BaseActivity(),
                 resultPlayer(videoUrl, 0, 0, true)
             }
 
-            RESULT_CANCELED, RESULT_VIMU_START, RESULT_VIMU_ENDED -> {
+            RESULT_OK, RESULT_CANCELED, RESULT_VIMU_START, RESULT_VIMU_ENDED -> {
                 val pos = intent.getIntExtra("position", 0)
                 val dur = intent.getIntExtra("duration", 0)
                 if (pos > 0 && dur > 0) { // ViMu duration can be -1 on playback error
-                    val ended = isAfterEndCreditsPosition(pos.toLong(), dur.toLong())
+                    val ended = resultCode == RESULT_VIMU_ENDED ||
+                            isAfterEndCreditsPosition(pos.toLong(), dur.toLong())
                     Log.i(TAG, "Playback stopped [position=$pos, duration=$dur, ended=$ended]")
                     resultPlayer(videoUrl, pos, dur, ended)
+                } else if (resultCode == RESULT_VIMU_ENDED) {
+                    Log.i(TAG, "Playback completed (ViMu ENDED)")
+                    resultPlayer(videoUrl, 0, 0, true)
                 }
             }
 
@@ -2466,10 +2498,10 @@ class MainActivity : BaseActivity(),
                 configureVlcIntent(
                     intent,
                     playerPackage,
-                    // state = state,
-                    videoTitle,
-                    position,
-                    // headers = headers
+                    state = state,
+                    videoTitle = videoTitle,
+                    position = position,
+                    headers = headers
                 )
             }
             // Just Player
@@ -2971,10 +3003,10 @@ class MainActivity : BaseActivity(),
     private fun configureVlcIntent(
         intent: Intent,
         playerPackage: String,
-        // state: PlayerStateManager.PlaybackState,
+        state: PlayerStateManager.PlaybackState,
         videoTitle: String,
         position: Long,
-        // headers: Array<String>? = null
+        headers: Array<String>? = null
     ) {
         intent.apply {
             if (VERSION.SDK_INT > 32) {
@@ -2988,7 +3020,7 @@ class MainActivity : BaseActivity(),
             // Basic video info
             putExtra("title", videoTitle)
             // Headers
-            // headers?.let { putExtra("http-headers", it) }
+            headers?.let { putExtra("http-headers", it) }
             // Handle playback position
             when {
                 playerTimeCode == "continue" && position > 0 -> {
@@ -3002,20 +3034,13 @@ class MainActivity : BaseActivity(),
                 }
             }
             // Add duration from current item's timeline if available
-            // state.currentItem?.timeline?.duration?.toLong()?.let {
-            //    if (it > 0) putExtra("extra_duration", it)
-            // }
+            state.currentItem?.timeline?.duration?.toLong()?.let {
+                if (it > 0) putExtra("extra_duration", it * 1000L)
+            }
             // Handle subtitles from state
-            // state.currentItem?.subtitles?.firstOrNull()?.let { firstSub ->
-            // putExtra("subtitles_location", firstSub.url)
-            // For VLC 3.5+ that supports multiple subtitles (this is for local URIs)
-            // if (VERSION.SDK_INT >= 30 && state.currentItem?.subtitles?.size!! > 1) {
-            //    putExtra(
-            //        "subtitles_extra",
-            //        state.currentItem?.subtitles?.drop(1)?.map { Uri.parse(it.url).toString() }?.toTypedArray()
-            //    )
-            // }
-            // }
+            state.currentItem?.subtitles?.firstOrNull()?.let { firstSub ->
+                putExtra("subtitles_location", encodeUrlIfNeeded(firstSub.url))
+            }
         }
     }
 
@@ -3090,12 +3115,12 @@ class MainActivity : BaseActivity(),
             when {
                 state.playlist.size > 1 -> {
                     state.currentItem?.url?.let { url ->
-                        setDataAndType(url.toUri(), "application/vnd.gtvbox.filelist")
+                        setDataAndType(encodeUrlIfNeeded(url).toUri(), "application/vnd.gtvbox.filelist")
                         configureViMuPlaylist(this, state, vimuVersion)
                     }
                 }
 
-                !state.playlist.isEmpty() -> {
+                state.playlist.isNotEmpty() -> {
                     configureSingleViMuItem(this, state, videoTitle, isIPTV)
                 }
             }
@@ -3119,7 +3144,7 @@ class MainActivity : BaseActivity(),
         state: PlayerStateManager.PlaybackState,
         vimuVersion: Long
     ) {
-        val urls = state.playlist.map { it.url.toUri().toString() }
+        val urls = state.playlist.map { encodeUrlIfNeeded(it.url) }
         val titles = state.playlist.mapIndexed { index, item ->
             item.title ?: "Item ${index + 1}" // Fallback to "Item 1", "Item 2", etc.
         }
@@ -3139,9 +3164,16 @@ class MainActivity : BaseActivity(),
                 )
                 putStringArrayListExtra(
                     "asusnamelist",
-                    ArrayList(titles.subList(safeIndex, urls.size))
+                    ArrayList(titles.subList(safeIndex, titles.size))
                 )
             }
+        }
+
+        state.currentItem?.subtitles?.takeIf { it.isNotEmpty() }?.let { subtitles ->
+            intent.putStringArrayListExtra(
+                "asussrtlist",
+                subtitles.map { encodeUrlIfNeeded(it.url) }.toCollection(ArrayList())
+            )
         }
     }
 
@@ -3157,7 +3189,7 @@ class MainActivity : BaseActivity(),
                 currentItem.subtitles?.takeIf { it.isNotEmpty() }?.let { subtitles ->
                     putStringArrayListExtra(
                         "asussrtlist",
-                        subtitles.map { it.url.toUri().toString() }.toCollection(ArrayList())
+                        subtitles.map { encodeUrlIfNeeded(it.url) }.toCollection(ArrayList())
                     )
                 }
                 if (isIPTV) {
@@ -3401,16 +3433,7 @@ class MainActivity : BaseActivity(),
                 durationMillis,
                 ended
             ) ?: return@launch  // Exit if current item not found
-            // Persist the updated state
-            playerStateManager.saveState(
-                activityJson = lampaActivity,
-                playlist = updatedPlaylist,
-                currentIndex = foundIndex,
-                currentUrl = videoUrl,
-                currentPosition = positionMillis.toLong(),
-                startIndex = currentState.startIndex, // Maintain original starting point
-                extras = currentState.extras // Don't loose extras
-            )
+
             // Handle automatic marking of previous items as complete
             if (playerAutoNext) {
                 updatePreviousItemsCompletion(
@@ -3426,20 +3449,82 @@ class MainActivity : BaseActivity(),
                     playerStateManager.convertTimelineToJsonString(timeline)
                 )
             }
-            // Update PlayNext (must finish before clearState)
-            // Critical section - ensure ordering
-            if (ended) {
-                val updateJob = launch(Dispatchers.Default) {
-                    updatePlayNext(true) // Runs in background
+
+            // Mark opened episodes in Lampa.PlayerPlaylist ("viewed" eye) and sync with TorrServer /viewed DB
+            markRangeOpenedAndSyncTorrServer(
+                updatedPlaylist,
+                currentState.startIndex,
+                foundIndex,
+                getHeadersFromState(currentState)
+            )
+
+            // Netflix-style Up Next progression: if the episode finished and a next episode exists,
+            // advance the state to the next episode instead of deleting Continue Watching state.
+            val hasNextEpisode = ended && (foundIndex + 1) in updatedPlaylist.indices
+            val targetIndex = if (hasNextEpisode) foundIndex + 1 else foundIndex
+            if (hasNextEpisode) {
+                val nextItem = updatedPlaylist[targetIndex]
+                if (nextItem.timeline?.percent == 100) {
+                    updatedPlaylist[targetIndex] = nextItem.copy(
+                        timeline = nextItem.timeline.copy(time = 0.0, percent = 0)
+                    )
                 }
-                updateJob.join() // Wait for completion before clearing state
+                top.rootu.lampa.net.TorrServerSync.preloadEpisodeAsync(
+                    updatedPlaylist[targetIndex].url,
+                    getHeadersFromState(currentState)
+                )
+            }
+            val targetUrl = updatedPlaylist[targetIndex].url
+            val targetPosition = if (hasNextEpisode || ended) 0L else positionMillis.toLong()
+            val allEnded = ended && !hasNextEpisode
+
+            // Persist the updated state
+            playerStateManager.saveState(
+                activityJson = lampaActivity,
+                playlist = updatedPlaylist,
+                currentIndex = targetIndex,
+                currentUrl = targetUrl,
+                currentPosition = targetPosition,
+                startIndex = if (hasNextEpisode) targetIndex else currentState.startIndex,
+                extras = currentState.extras
+            )
+
+            // Update PlayNext (must finish before clearState)
+            if (allEnded) {
+                val updateJob = launch(Dispatchers.Default) {
+                    updatePlayNext(true)
+                }
+                updateJob.join()
                 playerStateManager.clearState(lampaActivity)
             } else {
                 launch(Dispatchers.Default) {
-                    updatePlayNext(false) // Fire-and-forget for non-ended case
+                    updatePlayNext(false)
                 }
             }
         }
+    }
+
+    private fun markRangeOpenedAndSyncTorrServer(
+        playlist: List<PlayerStateManager.PlaylistItem>,
+        startIndex: Int,
+        currentIndex: Int,
+        headers: Array<String>?
+    ) {
+        if (playlist.isEmpty() || currentIndex !in playlist.indices) return
+        val opened = JSONArray()
+        val openedUrls = mutableListOf<String>()
+        val range = if (playerAutoNext) {
+            getCompletionRange(startIndex, currentIndex, playlist.lastIndex) + currentIndex
+        } else {
+            listOf(currentIndex)
+        }
+        range.distinct().filter { it in playlist.indices }.forEach { idx ->
+            val url = playlist[idx].url
+            opened.put(url)
+            openedUrls.add(url)
+        }
+        top.rootu.lampa.net.TorrServerSync.markViewedAsync(openedUrls, headers)
+        notifyLampaPlaylistOpened(opened)
     }
 
     /**
@@ -3543,17 +3628,23 @@ class MainActivity : BaseActivity(),
 
     /**
      * Determines if a playlist item matches the currently playing video URL.
+     * Supports canonical TorrServer `(hash, index)` matching and URL-decoded path comparison.
      */
     private fun isCurrentPlaybackItem(
         item: PlayerStateManager.PlaylistItem,
         videoUrl: String
     ): Boolean {
+        if (top.rootu.lampa.net.TorrServerSync.isSameStreamUrl(item.url, videoUrl)) {
+            return true
+        }
         val normalizedInputUrl = videoUrl.toUri().toString()
 
         return item.url.toUri().toString() == normalizedInputUrl ||
                 item.quality?.values?.any { qualityUrl ->
-                    qualityUrl.isNotEmpty() && qualityUrl.toUri()
-                        .toString() == normalizedInputUrl
+                    qualityUrl.isNotEmpty() && (
+                        qualityUrl.toUri().toString() == normalizedInputUrl ||
+                            top.rootu.lampa.net.TorrServerSync.isSameStreamUrl(qualityUrl, videoUrl)
+                    )
                 } == true
     }
 
@@ -3578,29 +3669,23 @@ class MainActivity : BaseActivity(),
     private suspend fun updatePlayNext(ended: Boolean) = withContext(Dispatchers.Default) {
         if (!isTvContentProviderAvailable) return@withContext
         try {
-            // The card runPlayer stored with this state came with the play request; the activity can be
-            // the page before.
             val card = (playerStateManager.getState(lampaActivity).extras[LAMPA_CARD_KEY] as? String)
                 ?.let { getJson(it, LampaCard::class.java) }
                 ?: getCardFromActivity(lampaActivity) ?: return@withContext
-            // Get current playback state
-            // val state = playerStateManager.getState(lampaActivity)
-            // Get state by matching card (must be added with saveState!)
             val state = playerStateManager.findStateByCard(card) ?: return@withContext
-            // playerStateManager.debugKeyMatching(lampaActivity)
             when {
-                ended -> { // Case 1: Playback ended - remove from Continue Watching
+                ended -> { // Case 1: All episodes/movie ended - remove from Continue Watching
                     logDebug("PlayNext: remove ${card.id} and clearState [ended]")
-                    WatchNext.removeContinueWatch(card) // FIXME: don't remove if added to PlayNext by user
+                    WatchNext.removeContinueWatch(card)
                     playerStateManager.clearState(lampaActivity)
                 }
-                // Case 2: Valid ongoing playback - update Continue Watching
+                // Case 2: Valid ongoing playback or Next Up episode - update Continue Watching
                 state.currentItem != null && !state.isEnded -> {
                     logDebug("PlayNext: Updating ${card.id}")
                     WatchNext.addLastPlayed(card, lampaActivity)
                 }
 
-                else -> { // Case 3: No valid state - just log
+                else -> {
                     logDebug("PlayNext: No valid playback state for ${card.id}")
                 }
             }

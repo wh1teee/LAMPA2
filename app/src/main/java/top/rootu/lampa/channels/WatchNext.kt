@@ -1,6 +1,7 @@
 package top.rootu.lampa.channels
 
 import android.annotation.SuppressLint
+import android.content.ContentProviderOperation
 import android.net.Uri
 import android.util.Log
 import androidx.core.net.toUri
@@ -8,6 +9,7 @@ import androidx.tvprovider.media.tv.TvContractCompat
 import androidx.tvprovider.media.tv.TvContractCompat.PreviewProgramColumns.ASPECT_RATIO_16_9
 import androidx.tvprovider.media.tv.TvContractCompat.PreviewProgramColumns.ASPECT_RATIO_2_3
 import androidx.tvprovider.media.tv.TvContractCompat.WatchNextPrograms.WATCH_NEXT_TYPE_CONTINUE
+import androidx.tvprovider.media.tv.TvContractCompat.WatchNextPrograms.WATCH_NEXT_TYPE_NEXT
 import androidx.tvprovider.media.tv.TvContractCompat.WatchNextPrograms.WATCH_NEXT_TYPE_WATCHLIST
 import androidx.tvprovider.media.tv.TvContractCompat.buildWatchNextProgramUri
 import androidx.tvprovider.media.tv.WatchNextProgram
@@ -19,7 +21,6 @@ import top.rootu.lampa.content.LampaProvider
 import top.rootu.lampa.helpers.Helpers
 import top.rootu.lampa.helpers.Helpers.debugLog
 import top.rootu.lampa.helpers.Helpers.getDefaultPosterUri
-import top.rootu.lampa.helpers.Helpers.getJson
 import top.rootu.lampa.helpers.Helpers.isTvContentProviderAvailable
 import top.rootu.lampa.helpers.Prefs.CUB
 import top.rootu.lampa.helpers.Prefs.FAV
@@ -30,10 +31,8 @@ import top.rootu.lampa.helpers.capitalizeFirstLetter
 import top.rootu.lampa.models.LAMPA_CARD_KEY
 import top.rootu.lampa.models.LampaCard
 
-
 object WatchNext {
     private const val TAG = "WatchNext"
-    // private const val RESUME_ID = "-1"
 
     @SuppressLint("RestrictedApi")
     private val WATCH_NEXT_MAP_PROJECTION = arrayOf(
@@ -53,11 +52,11 @@ object WatchNext {
                 val contentValues =
                     WatchNextProgram.Builder(existingProgram).build().toContentValues()
                 val rowsUpdated = App.context.contentResolver.update(
-                    TvContractCompat.WatchNextPrograms.CONTENT_URI,
+                    buildWatchNextProgramUri(existingProgram.id),
                     contentValues, null, null
                 )
                 if (rowsUpdated < 1) {
-                    Log.e(TAG, "Failed to update Watch Next program ${existingProgram?.id}")
+                    Log.e(TAG, "Failed to update Watch Next program ${existingProgram.id}")
                 }
             } else {
                 val programUri = App.context.contentResolver.insert(
@@ -76,20 +75,17 @@ object WatchNext {
         movieId?.let { deleteFromWatchNext(it) }
     }
 
-    suspend fun updateWatchNext() {
-        if (!isTvContentProviderAvailable) return
+    @SuppressLint("RestrictedApi")
+    suspend fun updateWatchNext() = withContext(Dispatchers.Default) {
+        if (!isTvContentProviderAvailable) return@withContext
         val context = App.context
-        val deleted = removeStale()
-        debugLog(TAG, "updateWatchNext() WatchNext stale cards removed: $deleted")
 
-        val lst = when { // reversed order
-            // CUB
+        val lst = when {
             context.syncEnabled -> context.CUB
                 ?.filter { it.type == LampaProvider.LATE }
                 ?.sortedBy { it.time }
                 ?.mapNotNull { it.data?.also { data -> data.fixCard() } }
                 .orEmpty()
-            // FAV
             else -> context.FAV?.card
                 ?.filter { context.FAV?.wath?.contains(it.id) == true }
                 ?.sortedByDescending { context.FAV?.wath?.indexOf(it.id) }
@@ -109,13 +105,57 @@ object WatchNext {
             "updateWatchNext() WatchNext items pending to remove: ${pending.size} ${pending.map { it.id }}"
         )
 
-        excludePending.forEach { card ->
-            withContext(Dispatchers.Default) {
-                try {
-                    add(card)
-                } catch (_: Exception) {
-                    // printLog(TAG, "Error adding $card to WatchNext: $e")
-                }
+        val operations = ArrayList<ContentProviderOperation>()
+        val existingPrograms = mutableMapOf<String, WatchNextProgram>()
+
+        // Single query to inspect all current WatchNext programs
+        context.contentResolver.query(
+            TvContractCompat.WatchNextPrograms.CONTENT_URI,
+            WATCH_NEXT_MAP_PROJECTION,
+            null,
+            null,
+            null
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                do {
+                    val program = WatchNextProgram.fromCursor(cursor)
+                    val providerId = program.internalProviderId
+                    if (providerId.isNullOrEmpty() || !context.isInWatchNext(providerId) || !program.isBrowsable) {
+                        operations.add(
+                            ContentProviderOperation.newDelete(buildWatchNextProgramUri(program.id)).build()
+                        )
+                    } else {
+                        existingPrograms[providerId] = program
+                    }
+                } while (cursor.moveToNext())
+            }
+        }
+
+        for (card in excludePending) {
+            val movieId = card.id ?: continue
+            val existing = existingPrograms[movieId]
+            if (existing != null) {
+                val values = WatchNextProgram.Builder(existing).build().toContentValues()
+                operations.add(
+                    ContentProviderOperation.newUpdate(buildWatchNextProgramUri(existing.id))
+                        .withValues(values)
+                        .build()
+                )
+            } else {
+                val values = createWatchNextProgram(card).toContentValues()
+                operations.add(
+                    ContentProviderOperation.newInsert(TvContractCompat.WatchNextPrograms.CONTENT_URI)
+                        .withValues(values)
+                        .build()
+                )
+            }
+        }
+
+        if (operations.isNotEmpty()) {
+            try {
+                context.contentResolver.applyBatch(TvContractCompat.AUTHORITY, operations)
+            } catch (e: Exception) {
+                Log.e(TAG, "Batch updateWatchNext failed: ${e.message}")
             }
         }
     }
@@ -124,7 +164,6 @@ object WatchNext {
         if (!isTvContentProviderAvailable) return
 
         card.id?.let { movieId ->
-            // deleteFromWatchNext(RESUME_ID) // Clear any existing continue watch
             deleteFromWatchNext(movieId)
 
             val programUri = App.context.contentResolver.insert(
@@ -140,7 +179,6 @@ object WatchNext {
 
     fun removeContinueWatch(card: LampaCard) {
         if (!isTvContentProviderAvailable) return
-        // deleteFromWatchNext(RESUME_ID)
         card.id?.let { movieId -> deleteFromWatchNext(movieId) }
     }
 
@@ -164,7 +202,7 @@ object WatchNext {
             if (cursor.moveToFirst()) {
                 val watchNextProgram = WatchNextProgram.fromCursor(cursor)
                 val json = watchNextProgram?.intent?.getStringExtra(LAMPA_CARD_KEY)
-                getJson(json, LampaCard::class.java)
+                Helpers.getJson(json, LampaCard::class.java)
             } else null
         }
     }
@@ -178,7 +216,6 @@ object WatchNext {
         }
     }
 
-    // Find the movie by our app's internal id.
     @SuppressLint("RestrictedApi")
     private fun findProgramByMovieId(movieId: String): WatchNextProgram? {
         App.context.contentResolver.query(
@@ -200,32 +237,6 @@ object WatchNext {
         return null
     }
 
-    // Remove items not in Lampa Watch Later
-    @SuppressLint("RestrictedApi")
-    private fun removeStale(): Int {
-        var count = 0
-        App.context.contentResolver.query(
-            TvContractCompat.WatchNextPrograms.CONTENT_URI,
-            WATCH_NEXT_MAP_PROJECTION,
-            null,
-            null,
-            null
-        )?.use { cursor ->
-            if (cursor.moveToFirst()) {
-                do {
-                    val program = WatchNextProgram.fromCursor(cursor)
-                    if (!App.context.isInWatchNext(program.internalProviderId) /* && program.internalProviderId != RESUME_ID */) {
-                        count++
-                        removeProgram(program.id)
-                    }
-                } while (cursor.moveToNext())
-            }
-        }
-        return count
-    }
-
-    // Check is a program has been removed from the UI by the user. If so, then
-    // remove the program from the content provider.
     @SuppressLint("RestrictedApi")
     private fun removeIfNotBrowsable(program: WatchNextProgram?): Boolean {
         if (program?.isBrowsable == false) {
@@ -251,87 +262,120 @@ object WatchNext {
         activityJson: String? = null
     ): WatchNextProgram {
         val info = mutableListOf<String>()
-        val programId = /* if (resume) RESUME_ID else */ card.id
+        val programId = card.id
+
+        val state = if (resume) {
+            PlayerStateManager(App.context).findStateByCard(card)
+        } else {
+            null
+        }
+        val currentItem = state?.currentItem
+
+        var title = card.title
+        val isSeries = card.type == "tv" ||
+                currentItem?.season != null ||
+                currentItem?.episode != null ||
+                (state != null && state.playlist.size > 1)
+
+        var type = TvContractCompat.WatchNextPrograms.TYPE_MOVIE
+        val seasonNum = currentItem?.season
+        val episodeNum = currentItem?.episode
+            ?: if (isSeries && state != null && state.playlist.size > 1) state.currentIndex + 1 else null
+        val episodeTitle = currentItem?.title?.takeIf { it.isNotBlank() && it != title && it != card.name }
+
+        if (isSeries) {
+            if (!card.name.isNullOrEmpty()) title = card.name
+            type = if (resume) TvContractCompat.WatchNextPrograms.TYPE_TV_EPISODE
+            else TvContractCompat.WatchNextPrograms.TYPE_TV_SERIES
+
+            if (resume && (seasonNum != null || episodeNum != null)) {
+                val seTag = when {
+                    seasonNum != null && episodeNum != null -> "S%02dE%02d".format(seasonNum, episodeNum)
+                    episodeNum != null -> "E%02d".format(episodeNum)
+                    else -> "S$seasonNum"
+                }
+                info.add(seTag)
+            } else {
+                card.number_of_seasons?.takeIf { it > 0 }?.let {
+                    info.add("S$it")
+                }
+            }
+        }
 
         // Add vote average if present and > 0
         card.vote_average?.takeIf { it > 0.0 }?.let {
             info.add("%.1f".format(it))
         }
 
-        var title = card.title
-        var type = TvContractCompat.WatchNextPrograms.TYPE_MOVIE
-
-        if (card.type == "tv") {
-            if (!card.name.isNullOrEmpty()) title = card.name
-            type = if (resume) TvContractCompat.WatchNextPrograms.TYPE_TV_EPISODE
-            else TvContractCompat.WatchNextPrograms.TYPE_TV_SERIES
-            card.number_of_seasons?.takeIf { it > 0 }?.let {
-                info.add("S$it")
-            }
-        }
         // Add genres if present
         card.genres?.mapNotNull {
             it?.name?.capitalizeFirstLetter()?.takeIf { genre -> genre.isNotBlank() }
         }?.takeIf { it.isNotEmpty() }?.joinToString(", ")?.let {
             info.add(it)
         }
-        // https://developer.android.com/codelabs/watchnext-for-movie-tv-episodes#3
-        val watchType = if (resume) WATCH_NEXT_TYPE_CONTINUE else WATCH_NEXT_TYPE_WATCHLIST
+
+        val (positionMs, durationMs) = state?.run {
+            val timeline = currentItem?.timeline
+            val pos = timeline?.time?.times(1000)?.toLong()?.takeIf { it > 0L }
+                ?: currentPosition
+            val dur = timeline?.duration?.times(1000)?.toLong() ?: 0L
+            pos to dur
+        } ?: (0L to 0L)
+
+        // When previous episode finished and state advanced to the next episode (positionMs == 0 && currentIndex > 0),
+        // mark as WATCH_NEXT_TYPE_NEXT ("Up Next" on Android TV), otherwise WATCH_NEXT_TYPE_CONTINUE.
+        val watchType = when {
+            !resume -> WATCH_NEXT_TYPE_WATCHLIST
+            positionMs <= 0L && state != null && state.currentIndex > 0 -> WATCH_NEXT_TYPE_NEXT
+            else -> WATCH_NEXT_TYPE_CONTINUE
+        }
+
+        val description = if (resume && !episodeTitle.isNullOrEmpty()) {
+            if (!card.overview.isNullOrBlank()) "$episodeTitle — ${card.overview}" else episodeTitle
+        } else {
+            card.overview
+        }
 
         val builder = WatchNextProgram.Builder()
             .setType(type)
             .setWatchNextType(watchType)
             .setLastEngagementTimeUtcMillis(System.currentTimeMillis())
             .setTitle(title)
-            .setDescription(card.overview)
+            .setDescription(description)
             .setGenre(info.joinToString(" · "))
             .setReviewRating((card.vote_average?.div(2) ?: 0).toString())
             .setIntent(Helpers.buildPendingIntent(card, resume, activityJson))
-            .setInternalProviderId(programId) // Our internal ID
+            .setInternalProviderId(programId)
             .setDurationMillis(card.runtime?.times(60000) ?: 0)
             .setReleaseDate(card.release_year)
             .setSearchable(true)
             .setLive(false)
-//        if (type == TYPE_TV_EPISODE) {
-//            builder.setEpisodeNumber(video.episodeNumber.toInt())
-//            builder.setSeasonNumber(video.seasonNumber.toInt())
-//            // Use TV series name and season number to generate a fake season name.
-//            builder.setSeasonTitle(context.getString(R.string.season, video.category, video.seasonNumber))
-//            // Use the name of the video as the episode name.
-//            builder.setEpisodeTitle(video.name)
-//            // Use TV series name as the tile, in this sample,
-//            // we use category as a fake TV series.
-//            builder.setTitle(video.category)
-//        }
-        if (resume) {
-            val playerStateManager = PlayerStateManager(App.context)
-            // Get the most relevant playback state
-            val state = playerStateManager.findStateByCard(card) // Find the state for this card
-            // val state = playerStateManager.findMatchingStates(activityJson.toString()).firstOrNull()
-            // Calculate watch position and duration if valid state exists
-            state?.let {
-                val (positionMs, durationMs) = it.run {
-                    val timeline = currentItem?.timeline
-                    val position = timeline?.time?.times(1000)?.toLong()
-                        ?: currentPosition // Convert seconds to ms
-                    val duration =
-                        timeline?.duration?.times(1000)?.toLong() ?: 0L // Convert seconds to ms
-                    position to duration
-                }
-                // Only set if we have valid position and duration
-                if (positionMs > 0 && durationMs > 0) {
-                    builder.setLastPlaybackPositionMillis(positionMs.toInt())
-                        .setDurationMillis(durationMs.toInt())
-                }
+
+        if (type == TvContractCompat.WatchNextPrograms.TYPE_TV_EPISODE) {
+            if (seasonNum != null && seasonNum > 0) {
+                builder.setSeasonNumber(seasonNum)
             }
+            if (episodeNum != null && episodeNum > 0) {
+                builder.setEpisodeNumber(episodeNum)
+            }
+            if (!episodeTitle.isNullOrEmpty()) {
+                builder.setEpisodeTitle(episodeTitle)
+            }
+        }
+
+        if (resume && positionMs > 0 && durationMs > 0) {
+            builder.setLastPlaybackPositionMillis(positionMs.toInt())
+                .setDurationMillis(durationMs.toInt())
         }
 
         val posterUri = card.img?.toUri() ?: getDefaultPosterUri()
         builder.setPosterArtUri(posterUri)
             .setPosterArtAspectRatio(ASPECT_RATIO_2_3)
 
-        if (!card.background_image.isNullOrEmpty()) {
-            builder.setThumbnailUri(card.background_image!!.toUri())
+        val thumbUrl = currentItem?.thumbnail?.takeIf { it.isNotEmpty() }
+            ?: card.background_image?.takeIf { it.isNotEmpty() }
+        if (!thumbUrl.isNullOrEmpty()) {
+            builder.setThumbnailUri(thumbUrl.toUri())
                 .setThumbnailAspectRatio(ASPECT_RATIO_16_9)
         }
 
