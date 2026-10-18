@@ -108,7 +108,13 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
         fun preloadNumReleases() {
             val priorityUrls = listOf(
                 "http://releases.yourok.ru/releases/4k_id.json",
-                "http://releases.yourok.ru/releases/colls_movie_ai.json"
+                "http://releases.yourok.ru/releases/colls_movie_ai.json",
+                "http://releases.yourok.ru/releases/movies_id.json",
+                "http://releases.yourok.ru/releases/tv_id.json",
+                "http://releases.yourok.ru/releases/legends_id.json",
+                "http://releases.yourok.ru/releases/cartoons_id.json",
+                "http://releases.yourok.ru/releases/cartoons_tv_id.json",
+                "http://releases.yourok.ru/releases/anime_id.json"
             )
             for (u in priorityUrls) {
                 fetchNumReleaseBytes(u)
