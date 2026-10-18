@@ -37,6 +37,37 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
 
     companion object {
         const val LOG_TAG = "WEB CONSOLE"
+        val preloadedAssets = java.util.concurrent.ConcurrentHashMap<String, ByteArray>()
+
+        private val CRITICAL_STARTUP_ASSETS = listOf(
+            "index.html",
+            "css/app.css",
+            "app.min.js",
+            "assembly.json",
+            "vender/jquery/jquery.js",
+            "vender/notify/notify.js",
+            "vender/scrollbar/jquery.scrollbar.js",
+            "vender/scrollbar/jquery.scrollbar.css",
+            "vender/navigator/navigator.js",
+            "vender/keypad/keypad.js",
+            "vender/keypad/style.css",
+            "fonts/SegoeUI/SegoeUI.woff",
+            "fonts/SegoeUI/SegoeUI-Light.woff",
+            "fonts/SegoeUI/SegoeUI-SemiBold.woff",
+            "fonts/SegoeUI/SegoeUI-Bold.woff"
+        )
+
+        fun preloadCriticalAssets(context: android.content.Context) {
+            for (assetPath in CRITICAL_STARTUP_ASSETS) {
+                if (!preloadedAssets.containsKey(assetPath)) {
+                    try {
+                        val bytes = context.assets.open("lampa/$assetPath").use { it.readBytes() }
+                        preloadedAssets[assetPath] = bytes
+                    } catch (_: Exception) {
+                    }
+                }
+            }
+        }
 
         val DOCUMENT_START_BOOTSTRAP_JS = """
             (function() {
@@ -53,6 +84,9 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
                     if (typeof localStorage !== 'undefined') {
                         if (!localStorage.getItem('language')) {
                             localStorage.setItem('language', 'ru');
+                        }
+                        if (!localStorage.getItem('region')) {
+                            localStorage.setItem('region', JSON.stringify({ code: 'ru', time: Date.now() }));
                         }
                         if (localStorage.getItem('parser_use') === null) {
                             localStorage.setItem('parser_use', 'true');
@@ -201,7 +235,8 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
                             cleanPath.startsWith("sound/")
                     if (isBundledAsset) {
                         try {
-                            val stream = mainActivity.assets.open("lampa/$cleanPath")
+                            val stream = preloadedAssets[cleanPath]?.let { java.io.ByteArrayInputStream(it) }
+                                ?: mainActivity.assets.open("lampa/$cleanPath")
                             val (mimeType, encoding) = when {
                                 cleanPath.endsWith(".html") -> "text/html" to "UTF-8"
                                 cleanPath.endsWith(".js") -> "application/javascript" to "UTF-8"

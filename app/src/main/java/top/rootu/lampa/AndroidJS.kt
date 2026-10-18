@@ -1,6 +1,7 @@
 package top.rootu.lampa
 
 import android.content.ActivityNotFoundException
+import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.util.Log
@@ -18,6 +19,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONException
 import org.json.JSONObject
+import java.io.File
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import top.rootu.lampa.browser.Browser
@@ -76,6 +78,10 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
         private const val UPDATE_DELAY = 5000L // in ms, wait before update TV channel
         private const val MAX_PENDING_RESPONSES = 256
         private const val PARSER_CACHE_TTL_MS = 90_000L
+        private const val SWR_CACHE_FILE = "lampa_swr_catalog_cache.json"
+        private const val SWR_FRESH_TTL_MS = 5 * 60 * 1000L
+        private const val SWR_MAX_TTL_MS = 24 * 60 * 60 * 1000L
+        private const val SWR_MAX_ENTRIES = 64
         private val HTTP_METHODS = setOf("DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT")
         private val PARSER_PATH_MARKERS = arrayOf(
             "/api/v2.0/indexers",
@@ -83,7 +89,51 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
             "/api/v1/search",
             "/torznab/api"
         )
+        private val SWR_CACHE_MARKERS = arrayOf(
+            "themoviedb.org/3/",
+            "tmdb.cub.",
+            "apitmdb.cub.",
+            "/api/checker",
+            "/api/plugins/blacklist",
+            "/api/ad/bot"
+        )
+        val swrCatalogCache = ConcurrentHashMap<String, Pair<Long, JSONObject>>()
         private val TORRSERVER_PACKAGES = listOf("ru.yourok.torrserve", "ru.yourok.torrserve.atv")
+
+        fun preloadSwrCache(context: Context) {
+            try {
+                val file = File(context.cacheDir, SWR_CACHE_FILE)
+                if (!file.exists()) return
+                val root = JSONObject(file.readText(Charsets.UTF_8))
+                val now = System.currentTimeMillis()
+                val keys = root.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    val entry = root.optJSONObject(key) ?: continue
+                    val ts = entry.optLong("ts", 0L)
+                    val resp = entry.optJSONObject("resp") ?: continue
+                    if (now - ts <= SWR_MAX_TTL_MS) {
+                        swrCatalogCache[key] = ts to resp
+                    }
+                }
+                debugLog(TAG, "Preloaded ${swrCatalogCache.size} SWR catalog cache entries from disk")
+            } catch (_: Exception) {
+            }
+        }
+
+        fun persistSwrCache(context: Context) {
+            try {
+                val root = JSONObject()
+                swrCatalogCache.entries.take(SWR_MAX_ENTRIES).forEach { (k, pair) ->
+                    root.put(k, JSONObject().apply {
+                        put("ts", pair.first)
+                        put("resp", pair.second)
+                    })
+                }
+                File(context.cacheDir, SWR_CACHE_FILE).writeText(root.toString(), Charsets.UTF_8)
+            } catch (_: Exception) {
+            }
+        }
 
         @Volatile
         var torrserverAuth: Boolean = false
@@ -199,7 +249,7 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
             "language" -> {
                 val newLang = eo.optString("value", "ru")
                 if (newLang != "undefined" && mainActivity.appLang != newLang) {
-                    App.setAppLanguage(mainActivity, newLang)
+                    App.setAppLanguage(mainActivity, newLang, recreate = false)
                     debugLog(TAG, "language changed to $newLang")
                 } else {
                     debugLog(TAG, "language not changed [${mainActivity.appLang}]")
@@ -530,6 +580,7 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
                         }
                     } else if (method == "GET" && !disableH2) {
                         val isParserQuery = PARSER_PATH_MARKERS.any { url.contains(it, ignoreCase = true) }
+                        val isSwrCandidate = SWR_CACHE_MARKERS.any { url.contains(it, ignoreCase = true) }
                         val coalesceKey = "$url|${dataType.orEmpty()}|$finalHeaders"
                         val cachedParserResp = if (isParserQuery) {
                             parserCache[coalesceKey]?.let { (ts, obj) ->
@@ -543,7 +594,32 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
                             }
                         } else null
 
-                        cachedParserResp ?: run {
+                        val cachedSwrResp = if (isSwrCandidate) {
+                            swrCatalogCache[url]?.let { (ts, obj) ->
+                                val age = System.currentTimeMillis() - ts
+                                if (age <= SWR_MAX_TTL_MS) {
+                                    debugLog(TAG, "httpReq swrCatalogCache HIT (${age}ms old) for $url")
+                                    if (age > SWR_FRESH_TTL_MS) {
+                                        channelScope.launch(Dispatchers.IO) {
+                                            try {
+                                                val fresh = http.Send(method, url, finalRequestContent, finalHeaders, timeout, dataType)
+                                                if (fresh.optString("body").isNotBlank()) {
+                                                    swrCatalogCache[url] = System.currentTimeMillis() to fresh
+                                                    persistSwrCache(mainActivity.applicationContext)
+                                                }
+                                            } catch (_: Throwable) {
+                                            }
+                                        }
+                                    }
+                                    obj
+                                } else {
+                                    swrCatalogCache.remove(url)
+                                    null
+                                }
+                            }
+                        } else null
+
+                        cachedParserResp ?: cachedSwrResp ?: run {
                             val deferred = inFlightGets.computeIfAbsent(coalesceKey) {
                                 channelScope.async(Dispatchers.IO) {
                                     http.Send(method, url, finalRequestContent, finalHeaders, timeout, dataType)
@@ -551,9 +627,19 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
                             }
                             try {
                                 deferred.await().also { fetched ->
-                                    if (isParserQuery && fetched.optString("body").contains("\"Results\"")) {
+                                    val body = fetched.optString("body")
+                                    if (isParserQuery && body.contains("\"Results\"")) {
                                         if (parserCache.size >= 64) parserCache.clear()
                                         parserCache[coalesceKey] = System.currentTimeMillis() to fetched
+                                    }
+                                    if (isSwrCandidate && body.isNotBlank() && !body.contains("\"status_code\":34")) {
+                                        if (swrCatalogCache.size >= SWR_MAX_ENTRIES) {
+                                            swrCatalogCache.keys.firstOrNull()?.let { swrCatalogCache.remove(it) }
+                                        }
+                                        swrCatalogCache[url] = System.currentTimeMillis() to fetched
+                                        channelScope.launch(Dispatchers.IO) {
+                                            persistSwrCache(mainActivity.applicationContext)
+                                        }
                                     }
                                 }
                             } finally {

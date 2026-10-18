@@ -88,7 +88,7 @@
         <activity
             android:name=".MainActivity"
             android:allowTaskReparenting="true"
-            android:configChanges="keyboard|keyboardHidden|orientation|screenSize"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenSize|screenLayout|smallestScreenSize|uiMode|locale|layoutDirection"
             android:exported="true"
             android:launchMode="singleTop">
             <intent-filter>

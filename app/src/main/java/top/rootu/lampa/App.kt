@@ -27,8 +27,9 @@ class App : Application() {
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     init {
-        // use vectors on pre-LP devices
+        // use vectors on pre-LP devices and set night mode before any Activity is created
         AppCompatDelegate.setCompatVectorFromResourcesEnabled(true)
+        AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES)
     }
 
     companion object {
@@ -82,9 +83,10 @@ class App : Application() {
             android.widget.Toast.makeText(appContext, text, duration).show()
         }
 
-        fun setAppLanguage(context: Context, langCode: String) {
+        fun setAppLanguage(context: Context, langCode: String, recreate: Boolean = true) {
             context.appLang = langCode
-            if (context is BaseActivity) {
+            appContext = appContext.setLanguage()
+            if (recreate && context is BaseActivity) {
                 context.recreateWithLanguage()
             }
         }
@@ -109,6 +111,13 @@ class App : Application() {
     }
 
     private fun initializeComponents() {
+        applicationScope.launch {
+            top.rootu.lampa.browser.SysView.preloadCriticalAssets(appContext)
+        }
+        applicationScope.launch {
+            AndroidJS.preloadSwrCache(appContext)
+        }
+
         // self-update check
         if (BuildConfig.enableUpdate) {
             applicationScope.launch {
