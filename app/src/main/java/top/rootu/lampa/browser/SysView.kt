@@ -73,6 +73,48 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
             }
         }
 
+        val numReleasesCache = java.util.concurrent.ConcurrentHashMap<String, ByteArray>()
+
+        fun fetchNumReleaseBytes(url: String): ByteArray? {
+            numReleasesCache[url]?.let { return it }
+            return try {
+                val req = okhttp3.Request.Builder()
+                    .url(url)
+                    .header("User-Agent", top.rootu.lampa.net.HttpHelper.userAgent)
+                    .build()
+                top.rootu.lampa.net.HttpHelper.client.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) return null
+                    val raw = resp.body.bytes()
+                    val decoded = if (raw.size >= 2 &&
+                        raw[0] == 0x1f.toByte() &&
+                        raw[1] == 0x8b.toByte()
+                    ) {
+                        java.util.zip.GZIPInputStream(java.io.ByteArrayInputStream(raw)).use {
+                            it.readBytes()
+                        }
+                    } else {
+                        raw
+                    }
+                    if (decoded.isNotEmpty()) {
+                        numReleasesCache[url] = decoded
+                    }
+                    decoded
+                }
+            } catch (_: Exception) {
+                null
+            }
+        }
+
+        fun preloadNumReleases() {
+            val priorityUrls = listOf(
+                "http://releases.yourok.ru/releases/4k_id.json",
+                "http://releases.yourok.ru/releases/colls_movie_ai.json"
+            )
+            for (u in priorityUrls) {
+                fetchNumReleaseBytes(u)
+            }
+        }
+
         val DOCUMENT_START_BOOTSTRAP_JS = """
             (function() {
                 try {
@@ -221,6 +263,22 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
                     )
                 }
                 val host = uri.host?.lowercase() ?: ""
+                if (host == "releases.yourok.ru") {
+                    val decoded = fetchNumReleaseBytes(uri.toString())
+                    if (decoded != null) {
+                        return android.webkit.WebResourceResponse(
+                            "application/json",
+                            "UTF-8",
+                            200,
+                            "OK",
+                            mapOf(
+                                "Access-Control-Allow-Origin" to "*",
+                                "Cache-Control" to "public, max-age=1800"
+                            ),
+                            java.io.ByteArrayInputStream(decoded)
+                        )
+                    }
+                }
                 val lampaHost = try {
                     Uri.parse(MainActivity.LAMPA_URL).host?.lowercase() ?: ""
                 } catch (_: Exception) {

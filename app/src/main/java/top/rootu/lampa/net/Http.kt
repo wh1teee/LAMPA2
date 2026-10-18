@@ -83,6 +83,14 @@ class Http(private val disableH2ForCall: Boolean = consumeDisableH2()) {
                 } else if ("base64".equals(dataType, ignoreCase = true)) {
                     json.put("body", Base64.encodeToString(body.bytes(), Base64.NO_WRAP))
                     json.put("encoding", "base64")
+                } else if (source.request(2) &&
+                    source.buffer[0] == 0x1f.toByte() &&
+                    source.buffer[1] == 0x8b.toByte()
+                ) {
+                    val text = java.util.zip.GZIPInputStream(body.byteStream())
+                        .bufferedReader(Charsets.UTF_8)
+                        .use { it.readText() }
+                    json.put("body", text)
                 } else {
                     json.put("body", body.string())
                 }
