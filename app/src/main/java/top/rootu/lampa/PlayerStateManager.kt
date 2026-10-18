@@ -147,7 +147,10 @@ class PlayerStateManager(context: Context) {
             val time: Double,
             val duration: Double,
             val percent: Int,
-            val profile: Int? = null
+            val profile: Int? = null,
+            val card: String? = null,
+            val season: Int? = null,
+            val episode: Int? = null
         )
 
         /**
@@ -362,13 +365,7 @@ class PlayerStateManager(context: Context) {
                         put("url", item.url)
                         item.title?.let { put("title", it) }
                         item.timeline?.let { timeline ->
-                            put("timeline", JSONObject().apply {
-                                put("hash", timeline.hash)
-                                put("time", timeline.time)
-                                put("duration", timeline.duration)
-                                put("percent", timeline.percent)
-                                timeline.profile?.let { put("profile", it) }
-                            })
+                            put("timeline", timeline.toJson())
                         }
                         item.quality?.let { quality ->
                             put("quality", JSONObject(quality))
@@ -732,6 +729,11 @@ class PlayerStateManager(context: Context) {
     private fun JSONObject.toPlaylistItem(): PlaylistItem {
         val rawUrl = try { // Required field
             getString("url").takeIf { it.isNotBlank() }
+                ?.let { u ->
+                    if (top.rootu.lampa.net.TorrServerSync.isTorrServerUrl(u) && u.contains("&preload")) {
+                        u.replace("&preload", "&play")
+                    } else u
+                }
                 ?: throw JSONException("Missing or empty URL")
         } catch (e: JSONException) {
             throw IllegalArgumentException("Invalid playlist item: URL required", e)
@@ -745,19 +747,26 @@ class PlayerStateManager(context: Context) {
             null to null
         }
 
+        val parsedTimeline = optJSONObject("timeline")?.toTimeline()
+        val finalSeason = explicitSeason ?: parsedTimeline?.season ?: inferredSeason
+        val finalEpisode = explicitEpisode ?: parsedTimeline?.episode ?: inferredEpisode
+
         return PlaylistItem(
             url = rawUrl,
             title = rawTitle,
             thumbnail = optString("thumbnail").takeIf { it.isNotEmpty() },
-            timeline = optJSONObject("timeline")?.toTimeline(),
+            timeline = parsedTimeline?.copy(
+                season = parsedTimeline.season ?: finalSeason,
+                episode = parsedTimeline.episode ?: finalEpisode
+            ),
             quality = optJSONObject("quality")?.toQualityMap(),
             subtitles = optJSONArray("subtitles")?.toSubtitles(),
             segments = optJSONObject("segments")?.toString()
                 ?: optString("segments").takeIf { it.isNotEmpty() },
 
             // Optional TV episode info — inferred from title/filename if absent in torrent metadata.
-            season = explicitSeason ?: inferredSeason,
-            episode = explicitEpisode ?: inferredEpisode,
+            season = finalSeason,
+            episode = finalEpisode,
 
             // IMDb id and TMDB id: a persisted flat field, else from the card (data.card.*) if present.
             imdbId = optString("imdb_id").takeIf { it.isNotEmpty() }
@@ -777,9 +786,9 @@ class PlayerStateManager(context: Context) {
     private fun JSONObject.toTimeline(): PlaylistItem.Timeline {
         return PlaylistItem.Timeline(
             hash = optString("hash", "0"),  // Safer string access with default
-            time = getDouble("time").coerceAtLeast(0.0),  // Ensure non-negative
-            duration = getDouble("duration").coerceAtLeast(0.0),  // Ensure non-negative
-            percent = getInt("percent").coerceIn(0, 100),  // Clamp to valid percentage
+            time = optDouble("time", 0.0).coerceAtLeast(0.0),  // Ensure non-negative
+            duration = optDouble("duration", 0.0).coerceAtLeast(0.0),  // Ensure non-negative
+            percent = optInt("percent", 0).coerceIn(0, 100),  // Clamp to valid percentage
             profile = try {
                 // More robust profile handling
                 when {
@@ -788,7 +797,10 @@ class PlayerStateManager(context: Context) {
                 }
             } catch (_: JSONException) {
                 null  // Fallback if profile exists but isn't an Int
-            }
+            },
+            card = optString("card").takeIf { it.isNotEmpty() },
+            season = if (has("season") && !isNull("season")) optInt("season").takeIf { it >= 0 } else null,
+            episode = if (has("episode") && !isNull("episode")) optInt("episode").takeIf { it >= 0 } else null
         )
     }
 
@@ -862,6 +874,9 @@ class PlayerStateManager(context: Context) {
             put("duration", duration)
             put("percent", percent)
             profile?.let { put("profile", profile) }
+            card?.let { put("card", it) }
+            season?.let { put("season", it) }
+            episode?.let { put("episode", it) }
         }
     }
 
