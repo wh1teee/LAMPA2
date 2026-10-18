@@ -165,8 +165,9 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
                 view: WebView?,
                 request: WebResourceRequest?
             ): android.webkit.WebResourceResponse? {
-                val path = request?.url?.path
-                if (path != null && path.endsWith("/plugins/modification.js")) {
+                val uri = request?.url ?: return super.shouldInterceptRequest(view, request)
+                val path = uri.path ?: ""
+                if (path.endsWith("/plugins/modification.js")) {
                     return android.webkit.WebResourceResponse(
                         "application/javascript",
                         "UTF-8",
@@ -175,6 +176,65 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
                         mapOf("Access-Control-Allow-Origin" to "*"),
                         java.io.ByteArrayInputStream(ByteArray(0))
                     )
+                }
+                val host = uri.host?.lowercase() ?: ""
+                val lampaHost = try {
+                    Uri.parse(MainActivity.LAMPA_URL).host?.lowercase() ?: ""
+                } catch (_: Exception) {
+                    ""
+                }
+                val isLampaFrontend = host == "lampa.mx" ||
+                        host == "lampa.stream" ||
+                        host.endsWith(".github.io") ||
+                        (host.isNotEmpty() && host == lampaHost)
+                if (isLampaFrontend) {
+                    val cleanPath = path.removePrefix("/").removePrefix("lampa/").ifEmpty { "index.html" }
+                    val isBundledAsset = cleanPath == "index.html" ||
+                            cleanPath == "youtube.html" ||
+                            cleanPath == "app.min.js" ||
+                            cleanPath == "assembly.json" ||
+                            cleanPath.startsWith("css/") ||
+                            cleanPath.startsWith("vender/") ||
+                            cleanPath.startsWith("img/") ||
+                            cleanPath.startsWith("lang/") ||
+                            cleanPath.startsWith("fonts/") ||
+                            cleanPath.startsWith("sound/")
+                    if (isBundledAsset) {
+                        try {
+                            val stream = mainActivity.assets.open("lampa/$cleanPath")
+                            val (mimeType, encoding) = when {
+                                cleanPath.endsWith(".html") -> "text/html" to "UTF-8"
+                                cleanPath.endsWith(".js") -> "application/javascript" to "UTF-8"
+                                cleanPath.endsWith(".css") -> "text/css" to "UTF-8"
+                                cleanPath.endsWith(".json") -> "application/json" to "UTF-8"
+                                cleanPath.endsWith(".svg") -> "image/svg+xml" to "UTF-8"
+                                cleanPath.endsWith(".png") -> "image/png" to null
+                                cleanPath.endsWith(".jpg") || cleanPath.endsWith(".jpeg") -> "image/jpeg" to null
+                                cleanPath.endsWith(".gif") -> "image/gif" to null
+                                cleanPath.endsWith(".ico") -> "image/x-icon" to null
+                                cleanPath.endsWith(".woff") -> "font/woff" to null
+                                cleanPath.endsWith(".woff2") -> "font/woff2" to null
+                                cleanPath.endsWith(".ttf") -> "font/ttf" to null
+                                cleanPath.endsWith(".ogg") -> "audio/ogg" to null
+                                cleanPath.endsWith(".mp3") -> "audio/mpeg" to null
+                                else -> "application/octet-stream" to null
+                            }
+                            debugLog("Serving local embedded Lampa asset: lampa/$cleanPath ($mimeType)")
+                            return android.webkit.WebResourceResponse(
+                                mimeType,
+                                encoding,
+                                200,
+                                "OK",
+                                mapOf(
+                                    "Access-Control-Allow-Origin" to "*",
+                                    "Cache-Control" to "public, max-age=31536000"
+                                ),
+                                stream
+                            )
+                        } catch (_: Exception) {
+                            // Asset not in local bundle; fall through to network
+                        }
+                    }
                 }
                 return super.shouldInterceptRequest(view, request)
             }
@@ -459,6 +519,19 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
                     var style = document.createElement('style');
                     style.id = 'lampa-native-gpu-style';
                     style.textContent = [
+                        ':root {',
+                        '  --lampa-ease-out: cubic-bezier(0.22, 1, 0.36, 1);',
+                        '  --lampa-dur-scroll: 0.24s;',
+                        '  --lampa-dur-card: 0.22s;',
+                        '  --lampa-dur-ui: 0.18s;',
+                        '}',
+                        '@media (prefers-reduced-motion: reduce) {',
+                        '  :root {',
+                        '    --lampa-dur-scroll: 0.01s;',
+                        '    --lampa-dur-card: 0.01s;',
+                        '    --lampa-dur-ui: 0.01s;',
+                        '  }',
+                        '}',
                         '.card, .card__view, .items-line, .scroll__body, .full-start__background, .torrent-item, .torrent-file, .torrent-serial, .selectbox-item, .menu__item {',
                         '  will-change: transform;',
                         '  backface-visibility: hidden;',
@@ -466,18 +539,18 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
                         '  transform: translateZ(0);',
                         '}',
                         '.scroll--mask .scroll__body {',
-                        '  transition: transform 0.24s cubic-bezier(0.22, 1, 0.36, 1) !important;',
-                        '  -webkit-transition: -webkit-transform 0.24s cubic-bezier(0.22, 1, 0.36, 1) !important;',
+                        '  transition: transform var(--lampa-dur-scroll) var(--lampa-ease-out) !important;',
+                        '  -webkit-transition: -webkit-transform var(--lampa-dur-scroll) var(--lampa-ease-out) !important;',
                         '}',
                         '.card__view {',
-                        '  transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.22s cubic-bezier(0.22, 1, 0.36, 1) !important;',
+                        '  transition: transform var(--lampa-dur-card) var(--lampa-ease-out), box-shadow var(--lampa-dur-card) var(--lampa-ease-out) !important;',
                         '}',
                         '.card.focus .card__view, .card.hover .card__view {',
                         '  transform: scale(1.05) translateZ(0);',
                         '  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.55) !important;',
                         '}',
                         '.full-start__button, .torrent-item, .torrent-file, .torrent-serial, .selectbox-item, .menu__item, .head__action {',
-                        '  transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1), background-color 0.18s ease-out, color 0.18s ease-out, box-shadow 0.18s ease-out !important;',
+                        '  transition: transform var(--lampa-dur-ui) var(--lampa-ease-out), background-color var(--lampa-dur-ui) ease-out, color var(--lampa-dur-ui) ease-out, box-shadow var(--lampa-dur-ui) ease-out !important;',
                         '}',
                         '.full-start__button.focus {',
                         '  transform: scale(1.04) translateZ(0);',

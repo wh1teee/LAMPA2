@@ -265,6 +265,7 @@ class MainActivity : BaseActivity(),
 		var useKodiPlaylist: Boolean = true
         var proxyTmdbEnabled: Boolean = false
         var lampaActivity: String = "{}" // JSON
+        var lastCardActivity: String = "{}" // Most recent activity JSON containing a valid movie card
         lateinit var urlAdapter: ArrayAdapter<String>
 
         // Just+ Player report callback extras: the launch's activity and card
@@ -2425,7 +2426,9 @@ class MainActivity : BaseActivity(),
                 jsonObject.optString("title", if (isIPTV) "LAMPA TV" else "LAMPA video")
             // The card sent with the play request names this video; the stored activity is only as
             // fresh as the last storage event and can still be the page before.
-            val card = getCard(jsonObject.optJSONObject("card")) ?: getCardFromActivity(playActivity)
+            val card = getCard(jsonObject.optJSONObject("card"))
+                ?: getCardFromActivity(playActivity)
+                ?: getCardFromActivity(lastCardActivity)
 
             // Headers handling
             var headers = prepareHeaders(jsonObject)
@@ -3898,6 +3901,7 @@ class MainActivity : BaseActivity(),
                 ?.let { getJson(it, LampaCard::class.java) }
                 ?: getCardFromActivity(stateActivity)
                 ?: getCardFromActivity(lampaActivity)
+                ?: getCardFromActivity(lastCardActivity)
                 ?: return@withContext
             val state = playerStateManager.findStateByCard(card) ?: return@withContext
             when {

@@ -147,7 +147,13 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
 
         when (eo.optString("name")) {
             "activity" -> {
-                MainActivity.lampaActivity = eo.optString("value", "{}")
+                val value = eo.optString("value", "{}")
+                MainActivity.lampaActivity = value
+                if (hasMovieCard(value)) {
+                    MainActivity.lastCardActivity = value
+                } else if (isTopLevelCatalogActivity(value)) {
+                    MainActivity.lastCardActivity = "{}"
+                }
                 debugLog(TAG, "lampaActivity stored: ${MainActivity.lampaActivity}")
                 mainActivity.onCardActivityEntered(MainActivity.lampaActivity)
             }
@@ -516,9 +522,10 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
                 }
                 val http = Http(disableH2)
                 val result = try {
-                    val responseJSON = if (method == "GET" && url.contains("/plugins/modification.js") && url.contains("lampa.mx")) {
+                    val localAssetBody = if (method == "GET") tryReadLocalLampaAsset(url) else null
+                    val responseJSON = if (localAssetBody != null) {
                         JSONObject().apply {
-                            putSafe("body", "")
+                            putSafe("body", localAssetBody)
                             putSafe("currentUrl", url)
                         }
                     } else if (method == "GET" && !disableH2) {
@@ -585,6 +592,58 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
             }
         } catch (e: Throwable) {
             e.printStackTrace()
+        }
+    }
+
+    private fun hasMovieCard(activityJson: String): Boolean {
+        return try {
+            val movie = JSONObject(activityJson).optJSONObject("movie")
+            movie != null && movie.optString("id").isNotEmpty()
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun isTopLevelCatalogActivity(activityJson: String): Boolean {
+        return try {
+            val component = JSONObject(activityJson).optString("component")
+            component in setOf(
+                "main",
+                "category",
+                "category_full",
+                "favorite",
+                "subscribes",
+                "mytorrents",
+                "timetable",
+                "relise",
+                "iptv"
+            )
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun tryReadLocalLampaAsset(url: String): String? {
+        if (url.contains("/plugins/modification.js") && url.contains("lampa.mx")) {
+            return ""
+        }
+        return try {
+            val uri = url.toUri()
+            val host = uri.host?.lowercase(Locale.ROOT) ?: return null
+            val lampaHost = MainActivity.LAMPA_URL.toUri().host?.lowercase(Locale.ROOT)
+            if (host != lampaHost && host != "lampa.mx" && host != "lampa.stream" && !host.endsWith(".github.io")) {
+                return null
+            }
+            val cleanPath = (uri.path ?: "")
+                .removePrefix("/")
+                .removePrefix("lampa/")
+            if (cleanPath.startsWith("lang/") || cleanPath == "assembly.json") {
+                mainActivity.assets.open("lampa/$cleanPath").bufferedReader(Charsets.UTF_8).use { it.readText() }
+            } else {
+                null
+            }
+        } catch (_: Exception) {
+            null
         }
     }
 
