@@ -80,6 +80,8 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
                     window.lampa_settings.disable_features = window.lampa_settings.disable_features || {};
                     window.lampa_settings.disable_features.dmca = true;
                     window.lampa_settings.disable_features.lgbt = true;
+                    window.lampa_settings.disable_features.ads = true;
+                    window.lampa_settings.disable_features.metric = true;
 
                     if (typeof localStorage !== 'undefined') {
                         if (!localStorage.getItem('language')) {
@@ -87,6 +89,9 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
                         }
                         if (!localStorage.getItem('region')) {
                             localStorage.setItem('region', JSON.stringify({ code: 'ru', time: Date.now() }));
+                        }
+                        if (localStorage.getItem('proxy_tmdb') === null) {
+                            localStorage.setItem('proxy_tmdb', 'false');
                         }
                         if (localStorage.getItem('parser_use') === null) {
                             localStorage.setItem('parser_use', 'true');
