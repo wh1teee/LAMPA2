@@ -142,9 +142,7 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
                         if (!localStorage.getItem('region')) {
                             localStorage.setItem('region', JSON.stringify({ code: 'ru', time: Date.now() }));
                         }
-                        if (localStorage.getItem('proxy_tmdb') === null) {
-                            localStorage.setItem('proxy_tmdb', 'false');
-                        }
+                        localStorage.setItem('proxy_tmdb', 'true');
                         if (localStorage.getItem('parser_use') === null) {
                             localStorage.setItem('parser_use', 'true');
                         }
@@ -176,15 +174,10 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
                         if (localStorage.getItem('torrserver_tracktimecode') === null) {
                             localStorage.setItem('torrserver_tracktimecode', 'true');
                         }
-                        if (localStorage.getItem('advanced_animation') === null) {
-                            localStorage.setItem('advanced_animation', 'true');
-                        }
-                        if (localStorage.getItem('glass_style') === null) {
-                            localStorage.setItem('glass_style', 'true');
-                        }
-                        if (!localStorage.getItem('glass_opacity')) {
-                            localStorage.setItem('glass_opacity', 'medium');
-                        }
+                        localStorage.setItem('navigation_type', 'controll');
+                        localStorage.setItem('is_true_mobile', 'false');
+                        localStorage.setItem('advanced_animation', 'false');
+                        localStorage.setItem('glass_style', 'false');
                     }
                 } catch (e) {}
             })();
@@ -285,74 +278,6 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
                         )
                     }
                 }
-                if (host == "api.themoviedb.org" || host.startsWith("apitmdb.")) {
-                    val pathAndQuery = (uri.encodedPath ?: "") + (uri.encodedQuery?.let { "?$it" } ?: "")
-                    val candidates = listOf(
-                        "https://api.themoviedb.org$pathAndQuery",
-                        "https://apitmdb.cub.red$pathAndQuery",
-                        "https://apitmdb.cub.best$pathAndQuery"
-                    )
-                    for (candidate in candidates) {
-                        try {
-                            val req = okhttp3.Request.Builder()
-                                .url(candidate)
-                                .header("User-Agent", top.rootu.lampa.net.HttpHelper.userAgent)
-                                .build()
-                            val bytes = top.rootu.lampa.net.HttpHelper.client.newCall(req).execute().use { resp ->
-                                if (resp.isSuccessful) resp.body.bytes() else null
-                            }
-                            if (bytes != null && bytes.isNotEmpty()) {
-                                return android.webkit.WebResourceResponse(
-                                    "application/json",
-                                    "UTF-8",
-                                    200,
-                                    "OK",
-                                    mapOf(
-                                        "Access-Control-Allow-Origin" to "*",
-                                        "Cache-Control" to "public, max-age=3600"
-                                    ),
-                                    java.io.ByteArrayInputStream(bytes)
-                                )
-                            }
-                        } catch (_: Exception) {
-                        }
-                    }
-                }
-                if (host == "image.tmdb.org" || host.endsWith("imagetmdb.com") || host.startsWith("imagetmdb.")) {
-                    val cleanImgPath = uri.encodedPath ?: ""
-                    val candidates = listOf(
-                        "https://imagetmdb.com$cleanImgPath",
-                        "https://imagetmdb.cub.red$cleanImgPath",
-                        "https://image.tmdb.org$cleanImgPath"
-                    )
-                    for (candidate in candidates) {
-                        try {
-                            val req = okhttp3.Request.Builder()
-                                .url(candidate)
-                                .header("User-Agent", top.rootu.lampa.net.HttpHelper.userAgent)
-                                .build()
-                            val bytes = top.rootu.lampa.net.HttpHelper.client.newCall(req).execute().use { resp ->
-                                if (resp.isSuccessful) resp.body.bytes() else null
-                            }
-                            if (bytes != null && bytes.isNotEmpty()) {
-                                val mime = if (cleanImgPath.endsWith(".png")) "image/png" else if (cleanImgPath.endsWith(".svg")) "image/svg+xml" else "image/jpeg"
-                                return android.webkit.WebResourceResponse(
-                                    mime,
-                                    null,
-                                    200,
-                                    "OK",
-                                    mapOf(
-                                        "Access-Control-Allow-Origin" to "*",
-                                        "Access-Control-Allow-Methods" to "GET, OPTIONS",
-                                        "Cache-Control" to "public, max-age=604800"
-                                    ),
-                                    java.io.ByteArrayInputStream(bytes)
-                                )
-                            }
-                        } catch (_: Exception) {
-                        }
-                    }
-                }
                 val lampaHost = try {
                     Uri.parse(MainActivity.LAMPA_URL).host?.lowercase() ?: ""
                 } catch (_: Exception) {
@@ -404,7 +329,7 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
                                 "OK",
                                 mapOf(
                                     "Access-Control-Allow-Origin" to "*",
-                                    "Cache-Control" to "no-store"
+                                    "Cache-Control" to "public, max-age=86400"
                                 ),
                                 stream
                             )
@@ -693,69 +618,6 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
                     window.lampa_settings.disable_features.dmca = true;
                     window.lampa_settings.disable_features.lgbt = true;
 
-                    var style = document.createElement('style');
-                    style.id = 'lampa-native-gpu-style';
-                    style.textContent = [
-                        ':root {',
-                        '  --lampa-ease-out: cubic-bezier(0.22, 1, 0.36, 1);',
-                        '  --lampa-dur-scroll: 0.24s;',
-                        '  --lampa-dur-card: 0.22s;',
-                        '  --lampa-dur-ui: 0.18s;',
-                        '}',
-                        '@media (prefers-reduced-motion: reduce) {',
-                        '  :root {',
-                        '    --lampa-dur-scroll: 0.01s;',
-                        '    --lampa-dur-card: 0.01s;',
-                        '    --lampa-dur-ui: 0.01s;',
-                        '  }',
-                        '}',
-                        '.card, .card__view, .items-line, .scroll__body, .full-start__background, .torrent-item, .torrent-file, .torrent-serial, .selectbox-item, .menu__item {',
-                        '  will-change: transform;',
-                        '  backface-visibility: hidden;',
-                        '  -webkit-backface-visibility: hidden;',
-                        '  transform: translateZ(0);',
-                        '}',
-                        '.scroll--mask .scroll__body {',
-                        '  transition: transform var(--lampa-dur-scroll) var(--lampa-ease-out) !important;',
-                        '  -webkit-transition: -webkit-transform var(--lampa-dur-scroll) var(--lampa-ease-out) !important;',
-                        '}',
-                        '.card__view {',
-                        '  transition: transform var(--lampa-dur-card) var(--lampa-ease-out), box-shadow var(--lampa-dur-card) var(--lampa-ease-out) !important;',
-                        '}',
-                        '.card.focus .card__view, .card.hover .card__view {',
-                        '  transform: scale(1.05) translateZ(0);',
-                        '  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.55) !important;',
-                        '}',
-                        '.full-start__button, .torrent-item, .torrent-file, .torrent-serial, .selectbox-item, .menu__item, .head__action {',
-                        '  transition: transform var(--lampa-dur-ui) var(--lampa-ease-out), background-color var(--lampa-dur-ui) ease-out, color var(--lampa-dur-ui) ease-out, box-shadow var(--lampa-dur-ui) ease-out !important;',
-                        '}',
-                        '.full-start__button.focus {',
-                        '  transform: scale(1.04) translateZ(0);',
-                        '}',
-                        '.torrent-item.focus, .torrent-file.focus, .torrent-serial.focus {',
-                        '  transform: scale(1.012) translateZ(0);',
-                        '  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5), inset 0 0 0 1.5px rgba(255, 255, 255, 0.85) !important;',
-                        '}'
-                    ].join('\n');
-                    if (document.head) document.head.appendChild(style);
-                    if (document.body) {
-                        document.body.classList.add('advanced--animation');
-                    }
-
-                    var markImagesAsync = function(root) {
-                        if (!root || !root.querySelectorAll) return;
-                        var imgs = root.querySelectorAll('img:not([decoding])');
-                        for (var i = 0; i < imgs.length; i++) {
-                            imgs[i].setAttribute('decoding', 'async');
-                        }
-                    };
-                    markImagesAsync(document);
-
-                    var hoverTimer = null;
-                    var streamHoverTimer = null;
-                    var currentFocusedCardId = null;
-                    var preloadedBackdrops = {};
-                    var preloadedCards = {};
                     var preloadedParsers = {};
 
                     var prefetchCardTorrents = function(card) {
@@ -791,84 +653,6 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
                             }, function() {}, function() {});
                         } catch (err) {}
                     };
-
-                    // Stage 1: Catalog Card Focus -> Preload w1280 backdrop + warm Lampa.Api.full 7-day cache + chain into Parser prefetch
-                    var triggerFocusPrefetch = function(el) {
-                        if (!el) return;
-                        clearTimeout(hoverTimer);
-                        clearTimeout(streamHoverTimer);
-                        hoverTimer = setTimeout(function() {
-                            try {
-                                var cd = el.card_data || (el.parentElement && el.parentElement.card_data);
-                                if (cd && cd.id && window.Lampa) {
-                                    currentFocusedCardId = cd.id;
-                                    if (cd.backdrop_path && Lampa.Api && Lampa.Api.img) {
-                                        var bgUrl = Lampa.Api.img(cd.backdrop_path, 'w1280');
-                                        if (bgUrl && !preloadedBackdrops[bgUrl]) {
-                                            preloadedBackdrops[bgUrl] = true;
-                                            var img = new Image();
-                                            img.decoding = 'async';
-                                            img.src = bgUrl;
-                                        }
-                                    }
-                                    var src = cd.source || (Lampa.Storage && Lampa.Storage.field('source')) || 'tmdb';
-                                    var method = cd.name || cd.first_air_date ? 'tv' : 'movie';
-                                    var cKey = src + ':' + method + ':' + cd.id;
-                                    if (!preloadedCards[cKey] && Lampa.Api && Lampa.Api.full) {
-                                        preloadedCards[cKey] = true;
-                                        Lampa.Api.full({
-                                            id: cd.id,
-                                            method: method,
-                                            card: cd,
-                                            source: src
-                                        }, function(data) {
-                                            if (data && data.movie) {
-                                                preloadedCards[cKey] = data.movie;
-                                                if (currentFocusedCardId === cd.id) {
-                                                    prefetchCardTorrents(data.movie);
-                                                }
-                                            }
-                                        }, function() {});
-                                    } else if (typeof preloadedCards[cKey] === 'object') {
-                                        prefetchCardTorrents(preloadedCards[cKey]);
-                                    }
-                                } else {
-                                    var bg = el.getAttribute('data-backdrop') || el.getAttribute('data-bg') || (el.dataset && (el.dataset.backdrop || el.dataset.bg));
-                                    if (bg && !preloadedBackdrops[bg]) {
-                                        preloadedBackdrops[bg] = true;
-                                        var img2 = new Image();
-                                        img2.decoding = 'async';
-                                        img2.src = bg;
-                                    }
-                                }
-                            } catch (e) {}
-                        }, 320);
-
-                        streamHoverTimer = setTimeout(function() {
-                            try {
-                                var streamUrl = el.getAttribute('data-stream') || el.getAttribute('data-url') || el.getAttribute('data-file') || (el.dataset && (el.dataset.stream || el.dataset.url || el.dataset.file));
-                                if (streamUrl && (streamUrl.indexOf('/stream/') !== -1 || streamUrl.indexOf('/play') !== -1 || streamUrl.indexOf('magnet:') === 0) && window.AndroidJS && window.AndroidJS.prefetchHint) {
-                                    window.AndroidJS.prefetchHint(streamUrl);
-                                }
-                            } catch (e) {}
-                        }, 420);
-                    };
-
-                    // Fix upstream Lampa Scroll.startScroll 300ms Layer.visible() drop during fast D-Pad scrolling
-                    var scrollVisTimer = null;
-                    document.addEventListener('transitionend', function(ev) {
-                        if (ev && ev.target && ev.target.classList && ev.target.classList.contains('scroll__body')) {
-                            clearTimeout(scrollVisTimer);
-                            var targetEl = ev.target;
-                            scrollVisTimer = setTimeout(function() {
-                                try {
-                                    if (window.Lampa && Lampa.Layer && Lampa.Layer.visible) {
-                                        Lampa.Layer.visible(targetEl.parentElement || targetEl);
-                                    }
-                                } catch (e) {}
-                            }, 120);
-                        }
-                    }, true);
 
                     // Stage 2 & 3: Hook Lampa native listeners for Full Card Torrent Prefetch + Instant TorrServer File List + Live Timeline Sync
                     var attachLampaHooks = function() {
@@ -1148,31 +932,6 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
                             if (attachLampaHooks()) clearInterval(hookPoll);
                         }, 200);
                         setTimeout(function() { clearInterval(hookPoll); }, 10000);
-                    }
-
-                    if (window.MutationObserver && document.body) {
-                        var obs = new MutationObserver(function(mutations) {
-                            for (var i = 0; i < mutations.length; i++) {
-                                var m = mutations[i];
-                                if (m.type === 'attributes' && m.attributeName === 'class') {
-                                    var target = m.target;
-                                    if (target && target.classList && target.classList.contains('focus')) {
-                                        triggerFocusPrefetch(target);
-                                    }
-                                } else if (m.type === 'childList' && m.addedNodes && m.addedNodes.length) {
-                                    for (var j = 0; j < m.addedNodes.length; j++) {
-                                        var node = m.addedNodes[j];
-                                        if (node && node.nodeType === 1) markImagesAsync(node);
-                                    }
-                                }
-                            }
-                        });
-                        obs.observe(document.body, {
-                            childList: true,
-                            subtree: true,
-                            attributes: true,
-                            attributeFilter: ['class']
-                        });
                     }
                 } catch (err) {}
             })();

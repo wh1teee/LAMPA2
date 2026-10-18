@@ -117,9 +117,6 @@ class App : Application() {
         applicationScope.launch {
             AndroidJS.preloadSwrCache(appContext)
         }
-        applicationScope.launch {
-            top.rootu.lampa.browser.SysView.preloadNumReleases()
-        }
 
         // self-update check
         if (BuildConfig.enableUpdate) {

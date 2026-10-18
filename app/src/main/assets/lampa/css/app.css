@@ -1333,15 +1333,6 @@ body.mouse--controll:not(.true--mobile) .head__backward {
 .activity--load .activity__loader {
   display: block;
 }
-.activity[aria-hidden=true]:not(.activity--active) {
-  content-visibility: hidden;
-  pointer-events: none;
-}
-@supports not (content-visibility: hidden) {
-  .activity[aria-hidden=true]:not(.activity--active) {
-    display: none;
-  }
-}
 .activity--active {
   opacity: 1;
   z-index: 1;
@@ -2377,10 +2368,6 @@ body.settings--open .settings__layer {
 .items-line--type-collection {
   min-height: 15em;
 }
-.items-line:nth-child(n+4) {
-  content-visibility: auto;
-  contain-intrinsic-size: auto none auto 24em;
-}
 .items-line--type-player-cards .items-line__head {
   padding-left: 0.8em;
 }
@@ -2844,18 +2831,13 @@ body.settings--open .settings__layer {
   position: absolute;
   right: 0.35em;
   bottom: 0.35em;
-  background: rgba(10, 12, 16, 0.86);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  background: rgba(10, 12, 16, 0.9);
   color: #fff;
   font-size: 1.25em;
   font-weight: 700;
   padding: 0.2em 0.5em;
-  -webkit-border-radius: 0.65em;
-          border-radius: 0.65em;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  -webkit-box-shadow: 0 0.25em 0.8em rgba(0, 0, 0, 0.55);
-          box-shadow: 0 0.25em 0.8em rgba(0, 0, 0, 0.55);
+  -webkit-border-radius: 0.5em;
+          border-radius: 0.5em;
   font-variant-numeric: tabular-nums;
   z-index: 1;
 }
@@ -3794,12 +3776,8 @@ body.touch-device.orientation--landscape .full-start__background {
   position: absolute;
   right: 0.65em;
   bottom: 0.65em;
-  background: rgba(10, 12, 16, 0.88);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  background: rgba(10, 12, 16, 0.92);
   border: 1px solid rgba(255, 255, 255, 0.16);
-  -webkit-box-shadow: 0 0.35em 1em rgba(0, 0, 0, 0.6);
-          box-shadow: 0 0.35em 1em rgba(0, 0, 0, 0.6);
   -webkit-border-radius: 0.75em;
           border-radius: 0.75em;
   padding: 0.38em 0.55em;
@@ -8982,10 +8960,6 @@ body.true--mobile .notice {
 
 .torrent-list {
   padding: 0 1.5em;
-}
-.torrent-list > .torrent-item:nth-child(n+9) {
-  content-visibility: auto;
-  contain-intrinsic-size: auto none auto 96px;
 }
 
 .torrent-files .torrent-file + .torrent-serial,

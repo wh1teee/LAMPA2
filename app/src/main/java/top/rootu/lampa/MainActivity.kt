@@ -469,7 +469,8 @@ class MainActivity : BaseActivity(),
 
     override fun onBrowserInitCompleted() {
         browserInitComplete = true
-        HttpHelper.userAgent = browser?.getUserAgentString() + " lampa_client"
+        val uaSuffix = if (isTvBox) " Android TV lampa_client" else " lampa_client"
+        HttpHelper.userAgent = (browser?.getUserAgentString() ?: "") + uaSuffix
         browser?.apply {
             setUserAgentString(HttpHelper.userAgent)
             setBackgroundColor(ContextCompat.getColor(baseContext, R.color.lampa_background))

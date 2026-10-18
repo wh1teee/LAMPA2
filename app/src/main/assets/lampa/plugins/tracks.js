@@ -1,16 +1,334 @@
-(function(){"use strict";let E="{localhost}",x=!1;function O(i,m){if(i.ffprobe&&i.path.split(".").pop()!=="mp4")setTimeout(()=>{m({streams:i.ffprobe})},200);else{E=="{localhost}"&&(E="185.204.0.61");let c=new WebSocket("ws://"+E+":8080/?"+i.torrent_hash+"&index="+i.id);c.addEventListener("message",d=>{c.close();let r={};try{r=JSON.parse(d.data)}catch(h){}r.streams&&m(r)})}}function R(i){let m=!1,c=!1,d={};function r(){console.log.apply(console.log,arguments)}function h(){return Lampa.PlayerVideo.video().audioTracks||[]}function L(){return Lampa.PlayerVideo.video().textTracks||[]}r("Tracks","start");function v(){if(c){let s=[],n=h(),a=c.streams.filter(t=>t.codec_type=="audio"),g=1;r("Tracks","set tracks:",n.length),a.length!==n.length&&(a=a.filter(t=>t.codec_name!=="dts")),a=a.filter(t=>t.tags),r("Tracks","filtred tracks:",a.length),a.forEach(t=>{let p=n[t.index-g],b={index:t.index-g,language:t.tags.language,label:t.tags.title||t.tags.handler_name,ghost:!p,selected:p?p.selected==!0||p.enabled==!0:!1};console.log("Tracks","tracks original",p),Object.defineProperty(b,"enabled",{set:U=>{if(U){let f=h(),y=f[b.index];for(let _=0;_<f.length;_++)f[_].enabled=!1,f[_].selected=!1;y&&(y.enabled=!0,y.selected=!0)}},get:()=>{}}),s.push(b)}),a.length&&Lampa.PlayerPanel.setTracks(s)}}function P(){if(c){let s=[],n=L(),a=c.streams.filter(t=>t.codec_type=="subtitle"),g=c.streams.filter(t=>t.codec_type=="audio").length+1;r("Tracks","set subs:",n.length),a=a.filter(t=>t.tags),r("Tracks","filtred subs:",a.length),a.forEach(t=>{let p=n[t.index-g],b={index:t.index-g,language:t.tags.language,label:t.tags.title||t.tags.handler_name,ghost:!n[t.index-g],selected:p?p.selected==!0||p.mode=="showing":!1};console.log("Tracks","subs original",p),Object.defineProperty(b,"mode",{set:U=>{if(U){let f=L(),y=f[b.index];for(let _=0;_<f.length;_++)f[_].mode="disabled",f[_].selected=!1;y&&(y.mode="showing",y.selected=!0)}},get:()=>{}}),s.push(b)}),a.length&&Lampa.PlayerPanel.setSubs(s)}}function w(){r("Tracks","tracks video event"),v(),Lampa.PlayerVideo.listener.remove("tracks",w)}function T(){r("Tracks","subs video event"),P(),Lampa.PlayerVideo.listener.remove("subs",T)}function e(){r("Tracks","canplay video event"),d.tracks?o(d.tracks):v(),d.subs?l(d.subs):P(),Lampa.PlayerVideo.listener.remove("canplay",e)}function o(s){if(c){let n=c.streams.filter(a=>a.codec_type=="audio");r("Tracks","webos set tracks:",s.length),n.length!==s.length&&(n=n.filter(a=>a.codec_name!=="truehd"),n.length!==s.length&&(n=n.filter(a=>a.codec_name!=="dts"))),n=n.filter(a=>a.tags),r("Tracks","webos tracks",s),n.forEach((a,g)=>{s[g]&&(s[g].language=a.tags.language,s[g].label=a.tags.title||a.tags.handler_name)})}}function l(s){if(c){let n=c.streams.filter(a=>a.codec_type=="subtitle");r("Tracks","webos set subs:",s.length),n.length!==s.length-1&&(n=n.filter(a=>a.codec_name!=="hdmv_pgs_subtitle")),n=n.filter(a=>a.tags),n.forEach((a,g)=>{let t=g+1;s[t]&&(s[t].language=a.tags.language,s[t].label=a.tags.title||a.tags.handler_name)})}}function u(s){r("Tracks","webos subs event"),d.subs=s.subs,c&&l(s.subs)}function k(s){r("Tracks","webos tracks event"),d.tracks=s.tracks,c&&o(s.tracks)}function S(){m=!0,O(i,s=>{r("Tracks","parsed",c),c=s,m&&(d.subs?l(d.subs):P(),d.tracks?o(d.tracks):v())})}function V(){m=!1,Lampa.Player.listener.remove("destroy",V),Lampa.PlayerVideo.listener.remove("tracks",w),Lampa.PlayerVideo.listener.remove("subs",T),Lampa.PlayerVideo.listener.remove("webos_subs",u),Lampa.PlayerVideo.listener.remove("webos_tracks",k),Lampa.PlayerVideo.listener.remove("canplay",e),r("Tracks","end")}Lampa.Player.listener.follow("destroy",V),Lampa.PlayerVideo.listener.follow("tracks",w),Lampa.PlayerVideo.listener.follow("subs",T),Lampa.PlayerVideo.listener.follow("webos_subs",u),Lampa.PlayerVideo.listener.follow("webos_tracks",k),Lampa.PlayerVideo.listener.follow("canplay",e),S()}function A(i){let m=Lampa.Template.get("tracks_loading");i.item.after(m),O(i.element,c=>{if(x){let d=function(e,o){if(o.length){let l=Lampa.Template.get("tracks_metainfo_block",{});l.find(".tracks-metainfo__label").text(Lampa.Lang.translate(e=="video"?"extensions_hpu_video":e=="audio"?"player_tracks":"player_"+e)),o.forEach(u=>{let k=$('<div class="tracks-metainfo__item tracks-metainfo__item--'+e+' selector"></div>');k.on("hover:focus",S=>{Lampa.Modal.scroll().update(k)});for(let S in u){let V=$('<div class="tracks-metainfo__column--'+S+'"></div>');V.text(u[S]),k.append(V)}l.find(".tracks-metainfo__info").append(k)}),T.append(l)}},r=[],h=[],L=[],v=c.streams.filter(e=>e.codec_type=="video"),P=c.streams.filter(e=>e.codec_type=="audio"),w=c.streams.filter(e=>e.codec_type=="subtitle");v.slice(0,1).forEach(e=>{let o={};e.width&&e.height&&(o.video=e.width+"\u0445"+e.height),e.duration?o.duration=new Date(e.duration*1e3).toISOString().slice(11,19):e.tags&&(e.tags.DURATION?(o.duration=e.tags.DURATION?e.tags.DURATION.split("."):"",o.duration.pop()):e.tags["DURATION-eng"]&&(o.duration=e.tags["DURATION-eng"]?e.tags["DURATION-eng"].split("."):"",o.duration.pop())),e.codec_name&&(o.codec=e.codec_name.toUpperCase()),e.is_avc&&(o.avc="AVC");let l=e.bit_rate?e.bit_rate:e.tags&&(e.tags.BPS||e.tags["BPS-eng"])?e.tags.BPS||e.tags["BPS-eng"]:"--";o.rate=l=="--"?l:Math.round(l/1e6)+" "+Lampa.Lang.translate("speed_mb"),Lampa.Arrays.getKeys(o).length&&r.push(o)}),P.forEach((e,o)=>{let l={num:o+1};e.tags&&(l.lang=(e.tags.language||"").toUpperCase()),l.name=e.tags?e.tags.title||e.tags.handler_name:"",e.codec_name&&(l.codec=e.codec_name.toUpperCase()),e.channel_layout&&(l.channels=e.channel_layout.replace("(side)","").replace("stereo","2.0").replace("8 channels (FL+FR+FC+LFE+SL+SR+TFL+TFR)","7.1"));let u=e.bit_rate?e.bit_rate:e.tags&&(e.tags.BPS||e.tags["BPS-eng"])?e.tags.BPS||e.tags["BPS-eng"]:"--";l.rate=u=="--"?u:Math.round(u/1e3)+" "+Lampa.Lang.translate("speed_kb"),Lampa.Arrays.getKeys(l).length&&h.push(l)}),w.forEach((e,o)=>{let l={num:o+1};e.tags&&(l.lang=(e.tags.language||"").toUpperCase()),l.name=e.tags?e.tags.title||e.tags.handler_name:"",e.codec_name&&(l.codec=e.codec_name.toUpperCase().replace("SUBRIP","SRT").replace("HDMV_PGS_SUBTITLE","HDMV PGS").replace("MOV_TEXT","MOV TEXT")),Lampa.Arrays.getKeys(l).length&&L.push(l)});let T=Lampa.Template.get("tracks_metainfo",{});d("video",r),d("audio",h),d("subs",L),m.remove(),(r.length||h.length||L.length)&&i.item.after(T),Lampa.Controller.enabled().name=="modal"&&Lampa.Controller.toggle("modal")}})}Lampa.Player.listener.follow("start",i=>{i.torrent_hash&&R(i)}),Lampa.Listener.follow("torrent_file",i=>{i.type=="list_open"&&(x=!0),i.type=="list_close"&&(x=!1),i.type=="render"&&i.items.length==1&&x&&A(i)}),Lampa.Template.add("tracks_loading",`
+(function () {
+    'use strict';
+
+    let connect_host = "{localhost}";
+    let list_opened = false;
+    function reguest(params, callback) {
+      if (params.ffprobe && params.path.split(".").pop() !== "mp4") {
+        setTimeout(() => {
+          callback({ streams: params.ffprobe });
+        }, 200);
+      } else {
+        if (connect_host == "{localhost}") connect_host = "185.204.0.61";
+        let socket = new WebSocket("ws://" + connect_host + ":8080/?" + params.torrent_hash + "&index=" + params.id);
+        socket.addEventListener("message", (event) => {
+          socket.close();
+          let json = {};
+          try {
+            json = JSON.parse(event.data);
+          } catch (e) {
+          }
+          if (json.streams) callback(json);
+        });
+      }
+    }
+    function subscribeTracks(data) {
+      let inited = false;
+      let inited_parse = false;
+      let webos_replace = {};
+      function log() {
+        console.log.apply(console.log, arguments);
+      }
+      function getTracks() {
+        let video = Lampa.PlayerVideo.video();
+        return video.audioTracks || [];
+      }
+      function getSubs() {
+        let video = Lampa.PlayerVideo.video();
+        return video.textTracks || [];
+      }
+      log("Tracks", "start");
+      function setTracks() {
+        if (inited_parse) {
+          let new_tracks = [];
+          let video_tracks = getTracks();
+          let parse_tracks = inited_parse.streams.filter((a) => a.codec_type == "audio");
+          let minus = 1;
+          log("Tracks", "set tracks:", video_tracks.length);
+          if (parse_tracks.length !== video_tracks.length) parse_tracks = parse_tracks.filter((a) => a.codec_name !== "dts");
+          parse_tracks = parse_tracks.filter((a) => a.tags);
+          log("Tracks", "filtred tracks:", parse_tracks.length);
+          parse_tracks.forEach((track) => {
+            let orig = video_tracks[track.index - minus];
+            let elem = {
+              index: track.index - minus,
+              language: track.tags.language,
+              label: track.tags.title || track.tags.handler_name,
+              ghost: orig ? false : true,
+              selected: orig ? orig.selected == true || orig.enabled == true : false
+            };
+            console.log("Tracks", "tracks original", orig);
+            Object.defineProperty(elem, "enabled", {
+              set: (v) => {
+                if (v) {
+                  let aud = getTracks();
+                  let trk = aud[elem.index];
+                  for (let i = 0; i < aud.length; i++) {
+                    aud[i].enabled = false;
+                    aud[i].selected = false;
+                  }
+                  if (trk) {
+                    trk.enabled = true;
+                    trk.selected = true;
+                  }
+                }
+              },
+              get: () => {
+              }
+            });
+            new_tracks.push(elem);
+          });
+          if (parse_tracks.length) Lampa.PlayerPanel.setTracks(new_tracks);
+        }
+      }
+      function setSubs() {
+        if (inited_parse) {
+          let new_subs = [];
+          let video_subs = getSubs();
+          let parse_subs = inited_parse.streams.filter((a) => a.codec_type == "subtitle");
+          let minus = inited_parse.streams.filter((a) => a.codec_type == "audio").length + 1;
+          log("Tracks", "set subs:", video_subs.length);
+          parse_subs = parse_subs.filter((a) => a.tags);
+          log("Tracks", "filtred subs:", parse_subs.length);
+          parse_subs.forEach((track) => {
+            let orig = video_subs[track.index - minus];
+            let elem = {
+              index: track.index - minus,
+              language: track.tags.language,
+              label: track.tags.title || track.tags.handler_name,
+              ghost: video_subs[track.index - minus] ? false : true,
+              selected: orig ? orig.selected == true || orig.mode == "showing" : false
+            };
+            console.log("Tracks", "subs original", orig);
+            Object.defineProperty(elem, "mode", {
+              set: (v) => {
+                if (v) {
+                  let txt = getSubs();
+                  let sub = txt[elem.index];
+                  for (let i = 0; i < txt.length; i++) {
+                    txt[i].mode = "disabled";
+                    txt[i].selected = false;
+                  }
+                  if (sub) {
+                    sub.mode = "showing";
+                    sub.selected = true;
+                  }
+                }
+              },
+              get: () => {
+              }
+            });
+            new_subs.push(elem);
+          });
+          if (parse_subs.length) Lampa.PlayerPanel.setSubs(new_subs);
+        }
+      }
+      function listenTracks() {
+        log("Tracks", "tracks video event");
+        setTracks();
+        Lampa.PlayerVideo.listener.remove("tracks", listenTracks);
+      }
+      function listenSubs() {
+        log("Tracks", "subs video event");
+        setSubs();
+        Lampa.PlayerVideo.listener.remove("subs", listenSubs);
+      }
+      function canPlay() {
+        log("Tracks", "canplay video event");
+        if (webos_replace.tracks) setWebosTracks(webos_replace.tracks);
+        else setTracks();
+        if (webos_replace.subs) setWebosSubs(webos_replace.subs);
+        else setSubs();
+        Lampa.PlayerVideo.listener.remove("canplay", canPlay);
+      }
+      function setWebosTracks(video_tracks) {
+        if (inited_parse) {
+          let parse_tracks = inited_parse.streams.filter((a) => a.codec_type == "audio");
+          log("Tracks", "webos set tracks:", video_tracks.length);
+          if (parse_tracks.length !== video_tracks.length) {
+            parse_tracks = parse_tracks.filter((a) => a.codec_name !== "truehd");
+            if (parse_tracks.length !== video_tracks.length) {
+              parse_tracks = parse_tracks.filter((a) => a.codec_name !== "dts");
+            }
+          }
+          parse_tracks = parse_tracks.filter((a) => a.tags);
+          log("Tracks", "webos tracks", video_tracks);
+          parse_tracks.forEach((track, i) => {
+            if (video_tracks[i]) {
+              video_tracks[i].language = track.tags.language;
+              video_tracks[i].label = track.tags.title || track.tags.handler_name;
+            }
+          });
+        }
+      }
+      function setWebosSubs(video_subs) {
+        if (inited_parse) {
+          let parse_subs = inited_parse.streams.filter((a) => a.codec_type == "subtitle");
+          log("Tracks", "webos set subs:", video_subs.length);
+          if (parse_subs.length !== video_subs.length - 1) parse_subs = parse_subs.filter((a) => a.codec_name !== "hdmv_pgs_subtitle");
+          parse_subs = parse_subs.filter((a) => a.tags);
+          parse_subs.forEach((track, a) => {
+            let i = a + 1;
+            if (video_subs[i]) {
+              video_subs[i].language = track.tags.language;
+              video_subs[i].label = track.tags.title || track.tags.handler_name;
+            }
+          });
+        }
+      }
+      function listenWebosSubs(_data) {
+        log("Tracks", "webos subs event");
+        webos_replace.subs = _data.subs;
+        if (inited_parse) setWebosSubs(_data.subs);
+      }
+      function listenWebosTracks(_data) {
+        log("Tracks", "webos tracks event");
+        webos_replace.tracks = _data.tracks;
+        if (inited_parse) setWebosTracks(_data.tracks);
+      }
+      function listenStart() {
+        inited = true;
+        reguest(data, (result) => {
+          log("Tracks", "parsed", inited_parse);
+          inited_parse = result;
+          if (inited) {
+            if (webos_replace.subs) setWebosSubs(webos_replace.subs);
+            else setSubs();
+            if (webos_replace.tracks) setWebosTracks(webos_replace.tracks);
+            else setTracks();
+          }
+        });
+      }
+      function listenDestroy() {
+        inited = false;
+        Lampa.Player.listener.remove("destroy", listenDestroy);
+        Lampa.PlayerVideo.listener.remove("tracks", listenTracks);
+        Lampa.PlayerVideo.listener.remove("subs", listenSubs);
+        Lampa.PlayerVideo.listener.remove("webos_subs", listenWebosSubs);
+        Lampa.PlayerVideo.listener.remove("webos_tracks", listenWebosTracks);
+        Lampa.PlayerVideo.listener.remove("canplay", canPlay);
+        log("Tracks", "end");
+      }
+      Lampa.Player.listener.follow("destroy", listenDestroy);
+      Lampa.PlayerVideo.listener.follow("tracks", listenTracks);
+      Lampa.PlayerVideo.listener.follow("subs", listenSubs);
+      Lampa.PlayerVideo.listener.follow("webos_subs", listenWebosSubs);
+      Lampa.PlayerVideo.listener.follow("webos_tracks", listenWebosTracks);
+      Lampa.PlayerVideo.listener.follow("canplay", canPlay);
+      listenStart();
+    }
+    function parseMetainfo(data) {
+      let loading = Lampa.Template.get("tracks_loading");
+      data.item.after(loading);
+      reguest(data.element, (result) => {
+        if (list_opened) {
+          let append2 = function(name, fields) {
+            if (fields.length) {
+              let block = Lampa.Template.get("tracks_metainfo_block", {});
+              block.find(".tracks-metainfo__label").text(Lampa.Lang.translate(name == "video" ? "extensions_hpu_video" : name == "audio" ? "player_tracks" : "player_" + name));
+              fields.forEach((data2) => {
+                let item = $('<div class="tracks-metainfo__item tracks-metainfo__item--' + name + ' selector"></div>');
+                item.on("hover:focus", (e) => {
+                  Lampa.Modal.scroll().update(item);
+                });
+                for (let i in data2) {
+                  let div = $('<div class="tracks-metainfo__column--' + i + '"></div>');
+                  div.text(data2[i]);
+                  item.append(div);
+                }
+                block.find(".tracks-metainfo__info").append(item);
+              });
+              html.append(block);
+            }
+          };
+          let video = [];
+          let audio = [];
+          let subs = [];
+          let codec_video = result.streams.filter((a) => a.codec_type == "video");
+          let codec_audio = result.streams.filter((a) => a.codec_type == "audio");
+          let codec_subs = result.streams.filter((a) => a.codec_type == "subtitle");
+          codec_video.slice(0, 1).forEach((v) => {
+            let line = {};
+            if (v.width && v.height) line.video = v.width + "\u0445" + v.height;
+            if (v.duration) {
+              line.duration = new Date(v.duration * 1e3).toISOString().slice(11, 19);
+            } else if (v.tags) {
+              if (v.tags.DURATION) {
+                line.duration = v.tags.DURATION ? v.tags.DURATION.split(".") : "";
+                line.duration.pop();
+              } else if (v.tags["DURATION-eng"]) {
+                line.duration = v.tags["DURATION-eng"] ? v.tags["DURATION-eng"].split(".") : "";
+                line.duration.pop();
+              }
+            }
+            if (v.codec_name) line.codec = v.codec_name.toUpperCase();
+            if (Boolean(v.is_avc)) line.avc = "AVC";
+            let bit = v.bit_rate ? v.bit_rate : v.tags && (v.tags.BPS || v.tags["BPS-eng"]) ? v.tags.BPS || v.tags["BPS-eng"] : "--";
+            line.rate = bit == "--" ? bit : Math.round(bit / 1e6) + " " + Lampa.Lang.translate("speed_mb");
+            if (Lampa.Arrays.getKeys(line).length) video.push(line);
+          });
+          codec_audio.forEach((a, i) => {
+            let line = { num: i + 1 };
+            if (a.tags) {
+              line.lang = (a.tags.language || "").toUpperCase();
+            }
+            line.name = a.tags ? a.tags.title || a.tags.handler_name : "";
+            if (a.codec_name) line.codec = a.codec_name.toUpperCase();
+            if (a.channel_layout) line.channels = a.channel_layout.replace("(side)", "").replace("stereo", "2.0").replace("8 channels (FL+FR+FC+LFE+SL+SR+TFL+TFR)", "7.1");
+            let bit = a.bit_rate ? a.bit_rate : a.tags && (a.tags.BPS || a.tags["BPS-eng"]) ? a.tags.BPS || a.tags["BPS-eng"] : "--";
+            line.rate = bit == "--" ? bit : Math.round(bit / 1e3) + " " + Lampa.Lang.translate("speed_kb");
+            if (Lampa.Arrays.getKeys(line).length) audio.push(line);
+          });
+          codec_subs.forEach((a, i) => {
+            let line = { num: i + 1 };
+            if (a.tags) {
+              line.lang = (a.tags.language || "").toUpperCase();
+            }
+            line.name = a.tags ? a.tags.title || a.tags.handler_name : "";
+            if (a.codec_name) line.codec = a.codec_name.toUpperCase().replace("SUBRIP", "SRT").replace("HDMV_PGS_SUBTITLE", "HDMV PGS").replace("MOV_TEXT", "MOV TEXT");
+            if (Lampa.Arrays.getKeys(line).length) subs.push(line);
+          });
+          let html = Lampa.Template.get("tracks_metainfo", {});
+          append2("video", video);
+          append2("audio", audio);
+          append2("subs", subs);
+          loading.remove();
+          if (video.length || audio.length || subs.length) {
+            data.item.after(html);
+          }
+          if (Lampa.Controller.enabled().name == "modal") Lampa.Controller.toggle("modal");
+        }
+      });
+    }
+    Lampa.Player.listener.follow("start", (data) => {
+      if (data.torrent_hash) subscribeTracks(data);
+    });
+    Lampa.Listener.follow("torrent_file", (data) => {
+      if (data.type == "list_open") list_opened = true;
+      if (data.type == "list_close") list_opened = false;
+      if (data.type == "render" && data.items.length == 1 && list_opened) {
+        parseMetainfo(data);
+      }
+    });
+    Lampa.Template.add("tracks_loading", `
     <div class="tracks-loading">
         <span>#{loading}...</span>
     </div>
-`),Lampa.Template.add("tracks_metainfo",`
+`);
+    Lampa.Template.add("tracks_metainfo", `
     <div class="tracks-metainfo"></div>
-`),Lampa.Template.add("tracks_metainfo_block",`
+`);
+    Lampa.Template.add("tracks_metainfo_block", `
     <div class="tracks-metainfo__line">
         <div class="tracks-metainfo__label"></div>
         <div class="tracks-metainfo__info"></div>
     </div>
-`),Lampa.Template.add("tracks_css",`
+`);
+    Lampa.Template.add("tracks_css", `
     <style>
-    .tracks-loading{margin-top:1em;display:-webkit-box;display:-webkit-flex;display:-ms-flexbox;display:flex;-webkit-box-align:start;-webkit-align-items:flex-start;-ms-flex-align:start;align-items:flex-start}.tracks-loading:before{content:'';display:inline-block;width:1.3em;height:1.3em;background:url('./img/loader.svg') no-repeat 50% 50%;background-size:contain;margin-right:.4em}.tracks-loading>span{font-size:1.1em;line-height:1.1}.tracks-metainfo{margin-top:1em}.tracks-metainfo__line+.tracks-metainfo__line{margin-top:2em}.tracks-metainfo__label{opacity:.5;font-weight:600}.tracks-metainfo__info{padding-top:1em;line-height:1.2}.tracks-metainfo__info>div{background-color:rgba(0,0,0,0.22);display:-webkit-box;display:-webkit-flex;display:-ms-flexbox;display:flex;-webkit-border-radius:.3em;border-radius:.3em;-webkit-flex-wrap:wrap;-ms-flex-wrap:wrap;flex-wrap:wrap}.tracks-metainfo__info>div.focus{background-color:rgba(255,255,255,0.06)}.tracks-metainfo__info>div>div{padding:1em;-webkit-flex-shrink:0;-ms-flex-negative:0;flex-shrink:0}.tracks-metainfo__info>div>div:not(:last-child){padding-right:1.5em}.tracks-metainfo__info>div+div{margin-top:1em}.tracks-metainfo__column--video,.tracks-metainfo__column--name{margin-right:auto}.tracks-metainfo__column--num{min-width:3em;padding-right:0}.tracks-metainfo__column--rate{min-width:7em;text-align:right}.tracks-metainfo__column--channels{min-width:5em;text-align:right}
+    .tracks-loading {  margin-top: 1em;  display: -webkit-box;  display: -webkit-flex;  display: -ms-flexbox;  display: flex;  -webkit-box-align: start;  -webkit-align-items: flex-start;      -ms-flex-align: start;          align-items: flex-start;}.tracks-loading:before {  content: '';  display: inline-block;  width: 1.3em;  height: 1.3em;  background: url('./img/loader.svg') no-repeat 50% 50%;  background-size: contain;  margin-right: 0.4em;}.tracks-loading > span {  font-size: 1.1em;  line-height: 1.1;}.tracks-metainfo {  margin-top: 1em;}.tracks-metainfo__line + .tracks-metainfo__line {  margin-top: 2em;}.tracks-metainfo__label {  opacity: 0.5;  font-weight: 600;}.tracks-metainfo__info {  padding-top: 1em;  line-height: 1.2;}.tracks-metainfo__info > div {  background-color: rgba(0, 0, 0, 0.22);  display: -webkit-box;  display: -webkit-flex;  display: -ms-flexbox;  display: flex;  -webkit-border-radius: 0.3em;          border-radius: 0.3em;  -webkit-flex-wrap: wrap;      -ms-flex-wrap: wrap;          flex-wrap: wrap;}.tracks-metainfo__info > div.focus {  background-color: rgba(255, 255, 255, 0.06);}.tracks-metainfo__info > div > div {  padding: 1em;  -webkit-flex-shrink: 0;      -ms-flex-negative: 0;          flex-shrink: 0;}.tracks-metainfo__info > div > div:not(:last-child) {  padding-right: 1.5em;}.tracks-metainfo__info > div + div {  margin-top: 1em;}.tracks-metainfo__column--video, .tracks-metainfo__column--name {  margin-right: auto;}.tracks-metainfo__column--num {  min-width: 3em;  padding-right: 0;}.tracks-metainfo__column--rate {  min-width: 7em;  text-align: right;}.tracks-metainfo__column--channels {  min-width: 5em;  text-align: right;}
     </style>
-`),$("body").append(Lampa.Template.get("tracks_css",{},!0))})();
+`);
+    $("body").append(Lampa.Template.get("tracks_css", {}, true));
+
+})();
