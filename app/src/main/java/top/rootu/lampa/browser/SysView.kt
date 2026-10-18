@@ -54,7 +54,9 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
             "fonts/SegoeUI/SegoeUI.woff",
             "fonts/SegoeUI/SegoeUI-Light.woff",
             "fonts/SegoeUI/SegoeUI-SemiBold.woff",
-            "fonts/SegoeUI/SegoeUI-Bold.woff"
+            "fonts/SegoeUI/SegoeUI-Bold.woff",
+            "plugins/online_prestige.js",
+            "plugins/tracks.js"
         )
 
         fun preloadCriticalAssets(context: android.content.Context) {
@@ -237,7 +239,8 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
                             cleanPath.startsWith("img/") ||
                             cleanPath.startsWith("lang/") ||
                             cleanPath.startsWith("fonts/") ||
-                            cleanPath.startsWith("sound/")
+                            cleanPath.startsWith("sound/") ||
+                            cleanPath.startsWith("plugins/")
                     if (isBundledAsset) {
                         try {
                             val stream = preloadedAssets[cleanPath]?.let { java.io.ByteArrayInputStream(it) }
