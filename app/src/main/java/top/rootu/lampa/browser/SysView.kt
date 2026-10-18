@@ -56,7 +56,9 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
             "fonts/SegoeUI/SegoeUI-SemiBold.woff",
             "fonts/SegoeUI/SegoeUI-Bold.woff",
             "plugins/online_prestige.js",
-            "plugins/tracks.js"
+            "plugins/tracks.js",
+            "plugins/collections.js",
+            "plugins/iptv.js"
         )
 
         fun preloadCriticalAssets(context: android.content.Context) {
