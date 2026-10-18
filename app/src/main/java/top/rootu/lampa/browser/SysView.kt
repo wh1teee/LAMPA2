@@ -285,6 +285,74 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
                         )
                     }
                 }
+                if (host == "api.themoviedb.org" || host.startsWith("apitmdb.")) {
+                    val pathAndQuery = (uri.encodedPath ?: "") + (uri.encodedQuery?.let { "?$it" } ?: "")
+                    val candidates = listOf(
+                        "https://api.themoviedb.org$pathAndQuery",
+                        "https://apitmdb.cub.red$pathAndQuery",
+                        "https://apitmdb.cub.best$pathAndQuery"
+                    )
+                    for (candidate in candidates) {
+                        try {
+                            val req = okhttp3.Request.Builder()
+                                .url(candidate)
+                                .header("User-Agent", top.rootu.lampa.net.HttpHelper.userAgent)
+                                .build()
+                            val bytes = top.rootu.lampa.net.HttpHelper.client.newCall(req).execute().use { resp ->
+                                if (resp.isSuccessful) resp.body.bytes() else null
+                            }
+                            if (bytes != null && bytes.isNotEmpty()) {
+                                return android.webkit.WebResourceResponse(
+                                    "application/json",
+                                    "UTF-8",
+                                    200,
+                                    "OK",
+                                    mapOf(
+                                        "Access-Control-Allow-Origin" to "*",
+                                        "Cache-Control" to "public, max-age=3600"
+                                    ),
+                                    java.io.ByteArrayInputStream(bytes)
+                                )
+                            }
+                        } catch (_: Exception) {
+                        }
+                    }
+                }
+                if (host == "image.tmdb.org" || host.endsWith("imagetmdb.com") || host.startsWith("imagetmdb.")) {
+                    val cleanImgPath = uri.encodedPath ?: ""
+                    val candidates = listOf(
+                        "https://imagetmdb.com$cleanImgPath",
+                        "https://imagetmdb.cub.red$cleanImgPath",
+                        "https://image.tmdb.org$cleanImgPath"
+                    )
+                    for (candidate in candidates) {
+                        try {
+                            val req = okhttp3.Request.Builder()
+                                .url(candidate)
+                                .header("User-Agent", top.rootu.lampa.net.HttpHelper.userAgent)
+                                .build()
+                            val bytes = top.rootu.lampa.net.HttpHelper.client.newCall(req).execute().use { resp ->
+                                if (resp.isSuccessful) resp.body.bytes() else null
+                            }
+                            if (bytes != null && bytes.isNotEmpty()) {
+                                val mime = if (cleanImgPath.endsWith(".png")) "image/png" else if (cleanImgPath.endsWith(".svg")) "image/svg+xml" else "image/jpeg"
+                                return android.webkit.WebResourceResponse(
+                                    mime,
+                                    null,
+                                    200,
+                                    "OK",
+                                    mapOf(
+                                        "Access-Control-Allow-Origin" to "*",
+                                        "Access-Control-Allow-Methods" to "GET, OPTIONS",
+                                        "Cache-Control" to "public, max-age=604800"
+                                    ),
+                                    java.io.ByteArrayInputStream(bytes)
+                                )
+                            }
+                        } catch (_: Exception) {
+                        }
+                    }
+                }
                 val lampaHost = try {
                     Uri.parse(MainActivity.LAMPA_URL).host?.lowercase() ?: ""
                 } catch (_: Exception) {
@@ -336,7 +404,7 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
                                 "OK",
                                 mapOf(
                                     "Access-Control-Allow-Origin" to "*",
-                                    "Cache-Control" to "public, max-age=31536000"
+                                    "Cache-Control" to "no-store"
                                 ),
                                 stream
                             )
@@ -475,7 +543,7 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
                     )
                 ) {
                     debugLog("ERROR ${error.errorCode} ${error.description} on load ${request.url}")
-                    if (request.url.toString().trimEnd('/')
+                    if (request.isForMainFrame && request.url.toString().trimEnd('/')
                             .equals(MainActivity.LAMPA_URL, true)
                     ) {
                         view.loadUrl("about:blank")

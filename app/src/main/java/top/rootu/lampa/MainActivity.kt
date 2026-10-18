@@ -488,18 +488,22 @@ class MainActivity : BaseActivity(),
         if (view.visibility != View.VISIBLE) {
             view.visibility = View.VISIBLE
         }
-        // Smooth crossfade out for loaderView while marking it GONE immediately for delayedVoidJsFunc readiness
+        // Smooth crossfade out for loaderView without synchronous View.GONE snap
         if (loaderView.visibility == View.VISIBLE) {
+            loaderView.alpha = 0.99f
             loaderView.animate()
                 .alpha(0f)
-                .setDuration(220L)
+                .scaleX(1.03f)
+                .scaleY(1.03f)
+                .setDuration(240L)
                 .withEndAction {
                     loaderView.visibility = View.GONE
                     loaderView.alpha = 1f
+                    loaderView.scaleX = 1f
+                    loaderView.scaleY = 1f
                 }
                 .start()
         }
-        loaderView.visibility = View.GONE
 
         Log.d(TAG, "LAMPA onLoadFinished $url")
 
@@ -2378,7 +2382,7 @@ class MainActivity : BaseActivity(),
     }
 
     fun runVoidJsFunc(funcName: String, params: String) {
-        if (browserInitComplete && loaderView.isGone) {
+        if (browserInitComplete && (loaderView.isGone || loaderView.alpha < 1f)) {
             logDebug("runVoidJsFunc $funcName")
             val js = ("(function(){"
                     + "try {"

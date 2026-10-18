@@ -34,6 +34,7 @@ export default {
     full_budget: 'Бюджет',
     full_countries: 'Страны',
     full_like: 'Нравится',
+    title_online: 'Онлайн',
     full_torrents: 'Торренты',
     full_trailers: 'Трейлеры',
     full_detail: 'Подробно',
