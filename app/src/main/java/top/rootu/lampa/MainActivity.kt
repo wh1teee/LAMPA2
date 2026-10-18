@@ -426,6 +426,26 @@ class MainActivity : BaseActivity(),
         }
     }
 
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+            when (event.keyCode) {
+                KeyEvent.KEYCODE_PROG_RED,
+                KeyEvent.KEYCODE_PROG_GREEN,
+                KeyEvent.KEYCODE_PROG_YELLOW,
+                KeyEvent.KEYCODE_PROG_BLUE,
+                KeyEvent.KEYCODE_CHANNEL_UP,
+                KeyEvent.KEYCODE_CHANNEL_DOWN -> {
+                    val code = event.keyCode
+                    browser?.evaluateJavascript(
+                        "window.dispatchEvent(new KeyboardEvent('keydown', { keyCode: $code, which: $code, bubbles: true }));"
+                    ) {}
+                    return true
+                }
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         if (keyCode == KeyEvent.KEYCODE_MENU
             || keyCode == KeyEvent.KEYCODE_TV_CONTENTS_MENU
