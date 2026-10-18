@@ -332,8 +332,9 @@ class MainActivity : BaseActivity(),
         logDebug("onCreate SELECTED_BROWSER: $SELECTED_BROWSER")
         logDebug("onCreate LAMPA_URL: $LAMPA_URL")
         logDebug("onCreate SELECTED_PLAYER: $SELECTED_PLAYER")
-        playerStateManager = PlayerStateManager(this).apply {
-            purgeOldStates()
+        playerStateManager = PlayerStateManager(this)
+        lifecycleScope.launch(Dispatchers.IO) {
+            playerStateManager.purgeOldStates()
         }
         instance = java.lang.ref.WeakReference(this)
 
@@ -552,7 +553,6 @@ class MainActivity : BaseActivity(),
     }
 
     private fun setupActivity() {
-        AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES)
         enableEdgeToEdge()
         @Suppress("DEPRECATION")
         if (VERSION.SDK_INT <= Build.VERSION_CODES.TIRAMISU)

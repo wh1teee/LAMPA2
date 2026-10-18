@@ -24,6 +24,7 @@
 
     <meta name="referrer" content="never">
     
+    <link rel="preload" href="./app.min.js" as="script">
     <link rel="stylesheet" href="./vender/scrollbar/jquery.scrollbar.css">
     <link rel="stylesheet" href="./vender/keypad/style.css">
 
@@ -34,7 +35,7 @@
         window.youtube_lazy_load = true
     </script>
 
-    <div class="welcome"></div>
+    <div class="welcome" style="display: none;"></div>
 
     <div id="app">
 
@@ -45,7 +46,11 @@
         <div class="no-network__desc">Не удалось загрузить файл: <span class="no-network__file"></span></div>
     </div>
     
-    <script src="./webos/webOSTV.js"></script>
+    <script>
+        if (/web0s|webos|netcast/i.test(navigator.userAgent)) {
+            document.write('<script src="./webos/webOSTV.js"><\/script>');
+        }
+    </script>
     <script src="./vender/jquery/jquery.js"></script>
     <script src="./vender/notify/notify.js"></script>
     <script src="./vender/scrollbar/jquery.scrollbar.js"></script>
@@ -160,7 +165,7 @@
             )
         }
         else{
-            loadCurrentLampa()
+            document.write('<script src="./app.min.js"><\/script>')
         }
     </script>
 </body>
