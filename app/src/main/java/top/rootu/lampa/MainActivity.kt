@@ -762,17 +762,17 @@ class MainActivity : BaseActivity(),
                 val dur = durations.optInt(i, -1)
                 if (pos < 0 || dur <= 0) continue // never opened, or no length to measure it by
                 val ended = pos >= dur || isAfterEndCreditsPosition(pos * 1000L, dur * 1000L)
-                playlist[i] = createUpdatedPlaylistItem(playlist[i], pos * 1000, dur * 1000, ended)
+                playlist[i] = createUpdatedPlaylistItem(playlist[i], pos * 1000, dur * 1000, ended, card)
             }
             val index = report.optInt("index", -1).takeIf { it in playlist.indices } ?: state.currentIndex
             // Auto-next: the start item to the current one count as watched, as for the other players
             if (playerAutoNext) getCompletionRange(state.startIndex, index, playlist.lastIndex).forEach {
-                playlist[it] = createCompletedPlaylistItem(playlist[it])
+                playlist[it] = createCompletedPlaylistItem(playlist[it], card)
             }
             // Only changed items: Lampa stamps every write as new progress
             playlist.forEachIndexed { i, item ->
                 item.timeline?.takeIf { it.hash != "0" && it != state.playlist[i].timeline }?.let {
-                    runVoidJsFunc("Lampa.Timeline.update", playerStateManager.convertTimelineToJsonString(it))
+                    syncTimelineToLampa(it)
                 }
             }
             markOpened(playlist, positions, index, getHeadersFromState(state))
@@ -821,6 +821,25 @@ class MainActivity : BaseActivity(),
     }
 
     /**
+     * Synchronizes a Timeline object with Lampa's persistent timeline storage (`Lampa.Timeline.update`),
+     * Lampa's Android native bridge callback (`Lampa.Android.timeCall`), and any in-memory playlist
+     * items inside `Lampa.PlayerPlaylist.get()`.
+     */
+    private fun syncTimelineToLampa(timeline: PlayerStateManager.PlaylistItem.Timeline) {
+        if (timeline.hash == "0") return
+        val jsonStr = playerStateManager.convertTimelineToJsonString(timeline)
+        runVoidJsFunc(
+            "(function(t){" +
+                    "try{if(window.Lampa&&Lampa.Timeline)Lampa.Timeline.update(t);}catch(e){}" +
+                    "try{if(window.Lampa&&Lampa.Android&&typeof Lampa.Android.timeCall==='function')Lampa.Android.timeCall(t);}catch(e){}" +
+                    "try{var list=(window.Lampa&&Lampa.PlayerPlaylist&&Lampa.PlayerPlaylist.get())||[];" +
+                    "list.forEach(function(item){if(item&&item.timeline&&item.timeline.hash==t.hash){Object.assign(item.timeline,t);}});}catch(e){}" +
+                    "})",
+            jsonStr
+        )
+    }
+
+    /**
      * The "viewed" eye of the online plugin (online.js): its playlist items carry `callback: file.mark`,
      * which Lampa's own player calls as each episode starts. An external player gets the playlist as
      * JSON, functions dropped, so only the episode clicked was ever marked. The playlist itself stays in
@@ -849,20 +868,25 @@ class MainActivity : BaseActivity(),
         }
         if (opened.length() == 0) return
         top.rootu.lampa.net.TorrServerSync.markViewedAsync(openedUrls, headers, timecodesSec)
-        notifyLampaPlaylistOpened(opened)
+        notifyLampaPlaylistOpened(opened, timecodesSec)
     }
 
-    private fun notifyLampaPlaylistOpened(opened: JSONArray) {
+    private fun notifyLampaPlaylistOpened(
+        opened: JSONArray,
+        timecodesSec: Map<String, Int> = emptyMap()
+    ) {
         if (opened.length() == 0) return
+        val timecodesJson = JSONObject(timecodesSec).toString()
         runVoidJsFunc(
-            "(function (opened) {" +
+            "(function (opened, tc) {" +
                     "var list = (window.Lampa && Lampa.PlayerPlaylist && Lampa.PlayerPlaylist.get()) || [];" +
                     "opened.forEach(function (url) {" +
                     "var item = list.find(function (p) { return p.url == url; });" +
-                    "if (item && typeof item.callback == 'function') item.callback();" +
+                    "if (item && typeof item.callback == 'function') { try { item.callback(); } catch(e) {} }" +
+                    "if (item && typeof item.viewed == 'function') { try { item.viewed((tc && tc[url]) || 0); } catch(e) {} }" +
                     "});" +
                     "})",
-            opened.toString()
+            "$opened, $timecodesJson"
         )
     }
 
@@ -999,6 +1023,28 @@ class MainActivity : BaseActivity(),
 
     private fun setupUI() {
         hideSystemUI() // Must be invoked after setContentView!
+        enableHighRefreshRate()
+    }
+
+    private fun enableHighRefreshRate() {
+        if (VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try {
+                @Suppress("DEPRECATION")
+                val currentDisplay = if (VERSION.SDK_INT >= Build.VERSION_CODES.R) display else windowManager.defaultDisplay
+                currentDisplay?.supportedModes?.maxByOrNull { mode ->
+                    mode.refreshRate * 10000f + (mode.physicalWidth * mode.physicalHeight) / 1000000f
+                }?.let { bestMode ->
+                    if (bestMode.refreshRate > 60.5f) {
+                        window.attributes = window.attributes.apply {
+                            preferredDisplayModeId = bestMode.modeId
+                        }
+                        logDebug("Enabled high refresh rate mode: ${bestMode.refreshRate}Hz (${bestMode.physicalWidth}x${bestMode.physicalHeight})")
+                    }
+                }
+            } catch (e: Exception) {
+                logDebug("Failed to set high refresh rate: ${e.message}")
+            }
+        }
     }
 
     private fun migrateSettings() {
@@ -2390,8 +2436,10 @@ class MainActivity : BaseActivity(),
                     headers = getHeadersFromState(it) ?: headers
                 }
             } else {
-                // Create new state
-                val playlist = try {
+                // Create new state (preserving any previously saved in-progress timeline for matching streams)
+                val existingState = playerStateManager.getState(playActivity).takeIf { it.playlist.isNotEmpty() }
+                    ?: card?.let { playerStateManager.findStateByCard(it) }
+                val rawPlaylist = try {
                     when {
                         jsonObject.has("playlist") && playerAutoNext ->
                             playerStateManager.convertJsonToPlaylist(jsonObject.getJSONArray("playlist"))
@@ -2402,8 +2450,40 @@ class MainActivity : BaseActivity(),
                     logDebug("Error converting playlist: ${e.message}")
                     listOf(playerStateManager.convertJsonToPlaylistItem(jsonObject))
                 }
+                val playlist = if (existingState != null) {
+                    rawPlaylist.map { item ->
+                        if (item.timeline != null && item.timeline.time > 0.0) {
+                            item
+                        } else {
+                            val savedItem = existingState.playlist.find { prev ->
+                                (item.timeline?.hash != null && item.timeline.hash != "0" && prev.timeline?.hash == item.timeline.hash) ||
+                                        isCurrentPlaybackItem(prev, item.url)
+                            }
+                            val savedTimeline = savedItem?.timeline
+                            if (savedTimeline != null && savedTimeline.time > 0.0 && savedTimeline.percent < VIDEO_COMPLETED_DURATION_MAX_PERCENTAGE) {
+                                item.copy(
+                                    timeline = savedTimeline.copy(
+                                        hash = item.timeline?.hash?.takeIf { it != "0" } ?: savedTimeline.hash,
+                                        card = item.timeline?.card ?: savedTimeline.card,
+                                        season = item.timeline?.season ?: savedTimeline.season ?: item.season,
+                                        episode = item.timeline?.episode ?: savedTimeline.episode ?: item.episode
+                                    )
+                                )
+                            } else {
+                                item
+                            }
+                        }
+                    }
+                } else {
+                    rawPlaylist
+                }
                 // safe start index
-                val currentIndex = playlist.indexOfFirst { it.url == videoUrl }.coerceAtLeast(0)
+                val currentIndex = playlist.indexOfFirst { isCurrentPlaybackItem(it, videoUrl) }.coerceAtLeast(0)
+                val initialPosition = playlist.getOrNull(currentIndex)?.timeline?.let { tl ->
+                    if (tl.time > 0.0 && tl.percent < VIDEO_COMPLETED_DURATION_MAX_PERCENTAGE) {
+                        (tl.time * 1000).toLong()
+                    } else 0L
+                } ?: 0L
                 // fill required extras
                 val extras = mutableMapOf<String, Any>().apply {
                     put("isIPTV", isIPTV)
@@ -2419,6 +2499,7 @@ class MainActivity : BaseActivity(),
                     playlist = playlist,
                     currentIndex = currentIndex,
                     currentUrl = videoUrl,
+                    currentPosition = initialPosition,
                     startIndex = currentIndex,
                     extras = extras,
                     card = card
@@ -2491,10 +2572,27 @@ class MainActivity : BaseActivity(),
         return null
     }
 
+    private fun playerPriorityRank(pkg: String): Int {
+        val lower = pkg.lowercase(Locale.ROOT)
+        return when {
+            lower in VIMU_PACKAGES -> 0
+            isJustPlusPlayer(lower) || lower == "com.brouken.player" -> 1
+            lower == "org.videolan.vlc" -> 2
+            lower in MPV_PACKAGES -> 3
+            lower in MX_PACKAGES -> 4
+            lower in EXO_PLAYER_PACKAGES -> 5
+            lower in UPLAYER_PACKAGES || lower in DDD_PLAYER_PACKAGES || lower in KODI_PACKAGES -> 6
+            else -> 10
+        }
+    }
+
     private fun getAvailablePlayers(intent: Intent): List<ResolveInfo> {
         return packageManager.queryIntentActivities(intent, PackageManager.MATCH_ALL)
             .filterNot { info ->
                 info.activityInfo.packageName.lowercase() in PLAYERS_BLACKLIST
+            }
+            .sortedBy { info ->
+                playerPriorityRank(info.activityInfo.packageName)
             }
     }
 
@@ -3522,6 +3620,10 @@ class MainActivity : BaseActivity(),
             val videoUrl = endedVideoUrl.takeUnless { it.isBlank() || it == "null" }
                 ?: currentState.currentUrl
                 ?: return@launch  // Exit if no valid URL found
+            val card = (currentState.extras[LAMPA_CARD_KEY] as? String)
+                ?.let { getJson(it, LampaCard::class.java) }
+                ?: getCardFromActivity(stateActivity)
+                ?: getCardFromActivity(lampaActivity)
             // Find and update the current playlist item
             val (updatedPlaylist, foundIndex) = updateCurrentPlaylistItem(
                 currentState.playlist,
@@ -3529,7 +3631,8 @@ class MainActivity : BaseActivity(),
                 positionMillis,
                 durationMillis,
                 ended,
-                fallbackIndex = currentState.currentIndex
+                fallbackIndex = currentState.currentIndex,
+                card = card
             ) ?: return@launch  // Exit if current item not found
 
             // Handle automatic marking of previous items as complete
@@ -3537,15 +3640,13 @@ class MainActivity : BaseActivity(),
                 updatePreviousItemsCompletion(
                     updatedPlaylist,
                     currentState.startIndex,
-                    foundIndex
+                    foundIndex,
+                    card
                 )
             }
             // Notify UI of current item's timeline update
             updatedPlaylist[foundIndex].timeline?.let { timeline ->
-                runVoidJsFunc(
-                    "Lampa.Timeline.update",
-                    playerStateManager.convertTimelineToJsonString(timeline)
-                )
+                syncTimelineToLampa(timeline)
             }
 
             // Mark opened episodes in Lampa.PlayerPlaylist ("viewed" eye) and sync with TorrServer /viewed DB
@@ -3627,7 +3728,7 @@ class MainActivity : BaseActivity(),
             }
         }
         top.rootu.lampa.net.TorrServerSync.markViewedAsync(openedUrls, headers, timecodesSec)
-        notifyLampaPlaylistOpened(opened)
+        notifyLampaPlaylistOpened(opened, timecodesSec)
     }
 
     /**
@@ -3639,7 +3740,8 @@ class MainActivity : BaseActivity(),
         positionMillis: Int,
         durationMillis: Int,
         ended: Boolean,
-        fallbackIndex: Int = -1
+        fallbackIndex: Int = -1,
+        card: LampaCard? = null
     ): Pair<MutableList<PlayerStateManager.PlaylistItem>, Int>? {
         val updatedPlaylist = playlist.toMutableList()
         val foundIndex =
@@ -3651,7 +3753,8 @@ class MainActivity : BaseActivity(),
             item = updatedPlaylist[foundIndex],
             positionMillis = positionMillis,
             durationMillis = durationMillis,
-            ended = ended
+            ended = ended,
+            card = card
         )
 
         return updatedPlaylist to foundIndex
@@ -3664,16 +3767,14 @@ class MainActivity : BaseActivity(),
     private fun updatePreviousItemsCompletion(
         playlist: MutableList<PlayerStateManager.PlaylistItem>,
         startIndex: Int,
-        currentIndex: Int
+        currentIndex: Int,
+        card: LampaCard? = null
     ) {
         getCompletionRange(startIndex, currentIndex, playlist.lastIndex).forEach { index ->
-            playlist[index] = createCompletedPlaylistItem(playlist[index])
+            playlist[index] = createCompletedPlaylistItem(playlist[index], card)
 
             playlist[index].timeline?.let { timeline ->
-                runVoidJsFunc(
-                    "Lampa.Timeline.update",
-                    playerStateManager.convertTimelineToJsonString(timeline)
-                )
+                syncTimelineToLampa(timeline)
                 logDebug("Marked item $index as completed (100%)")
             }
         }
@@ -3697,6 +3798,12 @@ class MainActivity : BaseActivity(),
         }
     }
 
+    private fun defaultTimelineCardKey(card: LampaCard?): String? {
+        val id = card?.id?.takeIf { it.isNotEmpty() } ?: return null
+        val prefix = if (card.type == "tv" || !card.first_air_date.isNullOrEmpty()) "tv" else "movie"
+        return "${prefix}_$id"
+    }
+
     /**
      * Creates a new playlist item with updated timeline
      */
@@ -3704,7 +3811,8 @@ class MainActivity : BaseActivity(),
         item: PlayerStateManager.PlaylistItem,
         positionMillis: Int,
         durationMillis: Int,
-        ended: Boolean
+        ended: Boolean,
+        card: LampaCard? = null
     ): PlayerStateManager.PlaylistItem {
         val percent = if (durationMillis > 0) (positionMillis * 100 / durationMillis) else 100
         return item.copy(
@@ -3712,7 +3820,11 @@ class MainActivity : BaseActivity(),
                 hash = item.timeline?.hash ?: "0",
                 time = if (ended) 0.0 else positionMillis / 1000.0,
                 duration = if (ended) 0.0 else durationMillis / 1000.0,
-                percent = if (ended) 100 else percent
+                percent = if (ended) 100 else percent,
+                profile = item.timeline?.profile,
+                card = item.timeline?.card ?: defaultTimelineCardKey(card),
+                season = item.timeline?.season ?: item.season,
+                episode = item.timeline?.episode ?: item.episode
             )
         )
     }
@@ -3720,13 +3832,20 @@ class MainActivity : BaseActivity(),
     /**
      * Creates a playlist item marked as 100% completed
      */
-    private fun createCompletedPlaylistItem(item: PlayerStateManager.PlaylistItem): PlayerStateManager.PlaylistItem {
+    private fun createCompletedPlaylistItem(
+        item: PlayerStateManager.PlaylistItem,
+        card: LampaCard? = null
+    ): PlayerStateManager.PlaylistItem {
         return item.copy(
             timeline = PlayerStateManager.PlaylistItem.Timeline(
                 hash = item.timeline?.hash ?: "0",
                 time = 0.0, // item.timeline?.duration ?: 0.0,
                 duration = 0.0, // item.timeline?.duration ?: 0.0,
-                percent = 100
+                percent = 100,
+                profile = item.timeline?.profile,
+                card = item.timeline?.card ?: defaultTimelineCardKey(card),
+                season = item.timeline?.season ?: item.season,
+                episode = item.timeline?.episode ?: item.episode
             )
         )
     }

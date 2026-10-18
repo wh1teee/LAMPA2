@@ -85,6 +85,15 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
                         if (localStorage.getItem('torrserver_tracktimecode') === null) {
                             localStorage.setItem('torrserver_tracktimecode', 'true');
                         }
+                        if (localStorage.getItem('advanced_animation') === null) {
+                            localStorage.setItem('advanced_animation', 'true');
+                        }
+                        if (localStorage.getItem('glass_style') === null) {
+                            localStorage.setItem('glass_style', 'true');
+                        }
+                        if (!localStorage.getItem('glass_opacity')) {
+                            localStorage.setItem('glass_opacity', 'medium');
+                        }
                     }
                 } catch (e) {}
             })();
@@ -150,6 +159,24 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
                 super.onPageFinished(view, url)
                 injectPerformanceAndPrefetchScript(view)
                 mainActivity.onBrowserPageFinished(view, url)
+            }
+
+            override fun shouldInterceptRequest(
+                view: WebView?,
+                request: WebResourceRequest?
+            ): android.webkit.WebResourceResponse? {
+                val path = request?.url?.path
+                if (path != null && path.endsWith("/plugins/modification.js")) {
+                    return android.webkit.WebResourceResponse(
+                        "application/javascript",
+                        "UTF-8",
+                        200,
+                        "OK",
+                        mapOf("Access-Control-Allow-Origin" to "*"),
+                        java.io.ByteArrayInputStream(ByteArray(0))
+                    )
+                }
+                return super.shouldInterceptRequest(view, request)
             }
 
             // https://developer.android.com/reference/android/webkit/WebViewClient#shouldOverrideUrlLoading(android.webkit.WebView,%20java.lang.String)
@@ -432,17 +459,38 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
                     var style = document.createElement('style');
                     style.id = 'lampa-native-gpu-style';
                     style.textContent = [
-                        '.card, .card__view, .items-line, .scroll__body, .full-start__background, .torrent-item, .torrent-file, .torrent-serial {',
+                        '.card, .card__view, .items-line, .scroll__body, .full-start__background, .torrent-item, .torrent-file, .torrent-serial, .selectbox-item, .menu__item {',
                         '  will-change: transform;',
                         '  backface-visibility: hidden;',
                         '  -webkit-backface-visibility: hidden;',
                         '  transform: translateZ(0);',
                         '}',
-                        '.card.focus .card__view {',
-                        '  transition: transform 0.16s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.16s ease-out !important;',
+                        '.scroll--mask .scroll__body {',
+                        '  transition: transform 0.24s cubic-bezier(0.22, 1, 0.36, 1) !important;',
+                        '  -webkit-transition: -webkit-transform 0.24s cubic-bezier(0.22, 1, 0.36, 1) !important;',
+                        '}',
+                        '.card__view {',
+                        '  transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.22s cubic-bezier(0.22, 1, 0.36, 1) !important;',
+                        '}',
+                        '.card.focus .card__view, .card.hover .card__view {',
+                        '  transform: scale(1.05) translateZ(0);',
+                        '  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.55) !important;',
+                        '}',
+                        '.full-start__button, .torrent-item, .torrent-file, .torrent-serial, .selectbox-item, .menu__item, .head__action {',
+                        '  transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1), background-color 0.18s ease-out, color 0.18s ease-out, box-shadow 0.18s ease-out !important;',
+                        '}',
+                        '.full-start__button.focus {',
+                        '  transform: scale(1.04) translateZ(0);',
+                        '}',
+                        '.torrent-item.focus, .torrent-file.focus, .torrent-serial.focus {',
+                        '  transform: scale(1.012) translateZ(0);',
+                        '  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5), inset 0 0 0 1.5px rgba(255, 255, 255, 0.85) !important;',
                         '}'
                     ].join('\n');
                     if (document.head) document.head.appendChild(style);
+                    if (document.body) {
+                        document.body.classList.add('advanced--animation');
+                    }
 
                     var markImagesAsync = function(root) {
                         if (!root || !root.querySelectorAll) return;
@@ -463,7 +511,10 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
                     var prefetchCardTorrents = function(card) {
                         try {
                             if (!card || !card.id || preloadedParsers[card.id]) return;
+                            if (!Array.isArray(card.genres)) return;
                             if (!window.Lampa || !Lampa.Storage || !Lampa.Storage.field('parser_use') || !Lampa.Parser || !Lampa.Parser.get) return;
+                            if (!card.title && card.name) card.title = card.name;
+                            if (!card.original_title && card.original_name) card.original_title = card.original_name;
                             var title = card.title || card.name || '';
                             var orig = card.original_title || card.original_name || title;
                             if (!title && !orig) return;
@@ -511,7 +562,7 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
                                         }
                                     }
                                     var src = cd.source || (Lampa.Storage && Lampa.Storage.field('source')) || 'tmdb';
-                                    var method = cd.name ? 'tv' : 'movie';
+                                    var method = cd.name || cd.first_air_date ? 'tv' : 'movie';
                                     var cKey = src + ':' + method + ':' + cd.id;
                                     if (!preloadedCards[cKey] && Lampa.Api && Lampa.Api.full) {
                                         preloadedCards[cKey] = true;
@@ -521,12 +572,15 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
                                             card: cd,
                                             source: src
                                         }, function(data) {
-                                            if (data && data.movie && currentFocusedCardId === cd.id) {
-                                                prefetchCardTorrents(data.movie);
+                                            if (data && data.movie) {
+                                                preloadedCards[cKey] = data.movie;
+                                                if (currentFocusedCardId === cd.id) {
+                                                    prefetchCardTorrents(data.movie);
+                                                }
                                             }
                                         }, function() {});
-                                    } else if (preloadedCards[cKey]) {
-                                        prefetchCardTorrents(cd);
+                                    } else if (typeof preloadedCards[cKey] === 'object') {
+                                        prefetchCardTorrents(preloadedCards[cKey]);
                                     }
                                 } else {
                                     var bg = el.getAttribute('data-backdrop') || el.getAttribute('data-bg') || (el.dataset && (el.dataset.backdrop || el.dataset.bg));
@@ -550,7 +604,23 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
                         }, 420);
                     };
 
-                    // Stage 2 & 3: Hook Lampa native listeners for Full Card Torrent Prefetch + Episode Focus Preload
+                    // Fix upstream Lampa Scroll.startScroll 300ms Layer.visible() drop during fast D-Pad scrolling
+                    var scrollVisTimer = null;
+                    document.addEventListener('transitionend', function(ev) {
+                        if (ev && ev.target && ev.target.classList && ev.target.classList.contains('scroll__body')) {
+                            clearTimeout(scrollVisTimer);
+                            var targetEl = ev.target;
+                            scrollVisTimer = setTimeout(function() {
+                                try {
+                                    if (window.Lampa && Lampa.Layer && Lampa.Layer.visible) {
+                                        Lampa.Layer.visible(targetEl.parentElement || targetEl);
+                                    }
+                                } catch (e) {}
+                            }, 120);
+                        }
+                    }, true);
+
+                    // Stage 2 & 3: Hook Lampa native listeners for Full Card Torrent Prefetch + Instant TorrServer File List + Live Timeline Sync
                     var attachLampaHooks = function() {
                         if (!window.Lampa || !Lampa.Listener || window.__lampaHooksAttached) return false;
                         window.__lampaHooksAttached = true;
@@ -569,6 +639,212 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
                             }
                         } catch (e) {}
 
+                        // Patch Lampa.Player.play & Lampa.Player.playlist (PR #362 backport + IPC payload slimming)
+                        // 1) Ensures torrent playlist URLs always use &play instead of &preload
+                        // 2) Strips N-times duplicated full TMDB card/raw/playlist objects copied onto each playlist_element
+                        //    by torrent.js before AndroidJS.openPlayer serializes the JSON over JNI (reduces 73-ep payload from ~4.4MB to ~80KB)
+                        try {
+                            if (Lampa.Player && !Lampa.Player.__nativePlaylistPatched) {
+                                Lampa.Player.__nativePlaylistPatched = true;
+                                var sanitizePlaylistItems = function(list) {
+                                    if (!Array.isArray(list)) return;
+                                    for (var i = 0; i < list.length; i++) {
+                                        var item = list[i];
+                                        if (item && typeof item === 'object') {
+                                            if (typeof item.url === 'string' && item.url.indexOf('&preload') !== -1) {
+                                                item.url = item.url.replace('&preload', '&play');
+                                            }
+                                            if (item.card && typeof item.card === 'object') {
+                                                if (item.card.id && !item.tmdb_id) item.tmdb_id = item.card.id;
+                                                if (item.card.imdb_id && !item.imdb_id) item.imdb_id = item.card.imdb_id;
+                                                item.card = {
+                                                    id: item.card.id,
+                                                    imdb_id: item.card.imdb_id,
+                                                    title: item.card.title || item.card.name,
+                                                    original_name: item.card.original_name
+                                                };
+                                            }
+                                            delete item.playlist;
+                                            delete item.raw;
+                                        }
+                                    }
+                                };
+                                if (Lampa.Player.play) {
+                                    var origPlay = Lampa.Player.play.bind(Lampa.Player);
+                                    Lampa.Player.play = function(params) {
+                                        if (params && typeof params === 'object') {
+                                            if (typeof params.url === 'string' && params.url.indexOf('&preload') !== -1 &&
+                                                Lampa.Storage && Lampa.Storage.field('player_torrent') === 'android') {
+                                                params.url = params.url.replace('&preload', '&play');
+                                            }
+                                            if (Array.isArray(params.playlist)) {
+                                                sanitizePlaylistItems(params.playlist);
+                                            }
+                                        }
+                                        return origPlay(params);
+                                    };
+                                }
+                                if (Lampa.Player.playlist) {
+                                    var origPlaylist = Lampa.Player.playlist.bind(Lampa.Player);
+                                    Lampa.Player.playlist = function(playlist) {
+                                        sanitizePlaylistItems(playlist);
+                                        return origPlaylist(playlist);
+                                    };
+                                }
+                            }
+                        } catch (e) {}
+
+                        // Patch Lampa.Timeline.view & update so live element.timeline references stay synchronized in-place
+                        // and player-measured durations are not overwritten by TMDB approximate runtime when reopening file lists
+                        try {
+                            if (Lampa.Timeline && Lampa.Timeline.view && Lampa.Timeline.update && !Lampa.Timeline.__nativePatched) {
+                                Lampa.Timeline.__nativePatched = true;
+                                var origView = Lampa.Timeline.view.bind(Lampa.Timeline);
+                                var origUpdate = Lampa.Timeline.update.bind(Lampa.Timeline);
+                                var liveTimelines = {};
+                                var playerMeasured = {};
+
+                                Lampa.Timeline.view = function(hash, meta) {
+                                    var v = origView(hash, meta);
+                                    if (v && v.hash && v.hash != 0) {
+                                        liveTimelines[v.hash] = v;
+                                        if (v.time > 0 && v.duration > 0 && v.percent > 0) {
+                                            playerMeasured[v.hash] = {
+                                                time: v.time,
+                                                duration: v.duration,
+                                                percent: v.percent
+                                            };
+                                        }
+                                    }
+                                    return v;
+                                };
+
+                                Lampa.Timeline.update = function(params) {
+                                    if (params && params.hash && params.hash != 0) {
+                                        var live = liveTimelines[params.hash];
+                                        var pm = playerMeasured[params.hash];
+                                        // If called by list$2 with serverView.timecode after clobbering view.duration with movie.runtime*60,
+                                        // preserve the exact player-measured duration and percentage
+                                        if (params === live && pm && pm.duration > 0 && Math.abs((params.time || 0) - pm.time) <= 2) {
+                                            params.duration = pm.duration;
+                                            params.percent = pm.percent;
+                                        } else if (params.time > 0 && params.duration > 0) {
+                                            playerMeasured[params.hash] = {
+                                                time: Math.round(params.time),
+                                                duration: Math.round(params.duration),
+                                                percent: params.percent
+                                            };
+                                        }
+                                        origUpdate(params);
+                                        if (live && live !== params) {
+                                            live.percent = params.percent;
+                                            if (typeof params.time !== 'undefined') live.time = Math.round(params.time);
+                                            if (typeof params.duration !== 'undefined') live.duration = Math.round(params.duration);
+                                            if (params.card) live.card = params.card;
+                                            if (typeof params.season !== 'undefined') live.season = params.season;
+                                            if (typeof params.episode !== 'undefined') live.episode = params.episode;
+                                        }
+                                    } else {
+                                        origUpdate(params);
+                                    }
+                                };
+                            }
+                        } catch (e) {}
+
+                        // Patch Lampa.Torserver to eliminate the 2,000ms forced setInterval delay when opening torrent file lists
+                        try {
+                            if (Lampa.Torserver && !Lampa.Torserver.__nativeFastPatch) {
+                                Lampa.Torserver.__nativeFastPatch = true;
+                                var lastConnectedTs = 0;
+                                var cachedFileStats = {};
+                                var origConnected = Lampa.Torserver.connected.bind(Lampa.Torserver);
+                                var origHash = Lampa.Torserver.hash.bind(Lampa.Torserver);
+                                var origFiles = Lampa.Torserver.files.bind(Lampa.Torserver);
+
+                                Lampa.Torserver.connected = function(success, fail) {
+                                    if (Date.now() - lastConnectedTs < 30000) {
+                                        success();
+                                        return;
+                                    }
+                                    origConnected(function() {
+                                        lastConnectedTs = Date.now();
+                                        success();
+                                    }, fail);
+                                };
+
+                                Lampa.Torserver.hash = function(object, success, fail) {
+                                    origHash(object, function(json) {
+                                        lastConnectedTs = Date.now();
+                                        if (json && json.hash && json.file_stats && json.file_stats.length) {
+                                            cachedFileStats[json.hash] = json;
+                                        }
+                                        var origSetInterval = window.setInterval;
+                                        window.setInterval = function(fn, delay) {
+                                            if (delay === 2000) {
+                                                setTimeout(fn, 15);
+                                                return origSetInterval.call(window, fn, 350);
+                                            }
+                                            return origSetInterval.apply(window, arguments);
+                                        };
+                                        try {
+                                            success(json);
+                                        } finally {
+                                            window.setInterval = origSetInterval;
+                                        }
+                                    }, fail);
+                                };
+
+                                Lampa.Torserver.files = function(hash, success, fail) {
+                                    if (hash && cachedFileStats[hash]) {
+                                        var cached = cachedFileStats[hash];
+                                        delete cachedFileStats[hash];
+                                        success(cached);
+                                        return;
+                                    }
+                                    origFiles(hash, success, fail);
+                                };
+
+                                if (Lampa.Torserver.stream) {
+                                    var origStream = Lampa.Torserver.stream.bind(Lampa.Torserver);
+                                    Lampa.Torserver.stream = function(path, hash, id) {
+                                        var url = origStream(path, hash, id);
+                                        // External Android players (ViMu, Just Player, VLC, MPV) stream &play directly
+                                        // and should not be blocked behind Lampa's 95% frontend preload gate
+                                        if (typeof url === 'string' && Lampa.Storage && Lampa.Storage.field('player_torrent') === 'android') {
+                                            return url.replace('&preload', '&play');
+                                        }
+                                        return url;
+                                    };
+                                }
+                            }
+                        } catch (e) {}
+
+                        // Strip non-interactive .watched-history.selector banner from stealing initial focus on Torrents screen
+                        var torrentListFocusTimer = null;
+                        Lampa.Listener.follow('torrent', function(e) {
+                            if (e && e.type === 'render') {
+                                clearTimeout(torrentListFocusTimer);
+                                torrentListFocusTimer = setTimeout(function() {
+                                    try {
+                                        var wh = document.querySelectorAll('.torrent-list .watched-history.selector');
+                                        var hadFocus = false;
+                                        for (var i = 0; i < wh.length; i++) {
+                                            if (wh[i].classList.contains('focus')) hadFocus = true;
+                                            wh[i].classList.remove('selector', 'focus');
+                                        }
+                                        if (hadFocus && Lampa.Controller) {
+                                            var firstTorrent = document.querySelector('.torrent-list .torrent-item.selector');
+                                            var scrollBody = document.querySelector('.torrent-list');
+                                            if (firstTorrent && scrollBody) {
+                                                Lampa.Controller.collectionSet(scrollBody.parentElement || scrollBody);
+                                                Lampa.Controller.collectionFocus(firstTorrent, scrollBody.parentElement || scrollBody);
+                                            }
+                                        }
+                                    } catch (err) {}
+                                }, 20);
+                            }
+                        });
+
                         // Stage 2: When a movie/series card opens, silently prefetch Jackett/RuTracker torrents into AndroidJS.parserCache
                         Lampa.Listener.follow('full', function(e) {
                             if (e && (e.type === 'start' || e.type === 'complite') && e.data && e.data.movie) {
@@ -579,17 +855,39 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
                             }
                         });
 
-                        // Stage 3: When D-Pad focuses a file/episode in TorrServer file list, pre-warm TorrServer stream buffer
+                        // Stage 3: Pre-warm TorrServer stream buffer + fix .torrnet-folder-name.selector focus trap in multi-season torrents
                         var torrentFileTimer = null;
                         Lampa.Listener.follow('torrent_file', function(e) {
-                            if (e && e.type === 'onfocus' && e.element && e.element.url) {
+                            if (!e) return;
+                            if (e.type === 'list_open') {
+                                setTimeout(function() {
+                                    try {
+                                        // Remove non-interactive .torrnet-folder-name from D-Pad selector collection
+                                        var folderHeaders = document.querySelectorAll('.torrnet-folder-name.selector');
+                                        var hadFocusedFolder = false;
+                                        for (var i = 0; i < folderHeaders.length; i++) {
+                                            if (folderHeaders[i].classList.contains('focus')) hadFocusedFolder = true;
+                                            folderHeaders[i].classList.remove('selector', 'focus');
+                                        }
+                                        var focusedEp = document.querySelector('.torrent-file.focus, .torrent-serial.focus');
+                                        var firstEp = document.querySelector('.torrent-file.selector, .torrent-serial.selector');
+                                        if ((!focusedEp || hadFocusedFolder) && firstEp && Lampa.Controller && Lampa.Modal) {
+                                            Lampa.Controller.collectionSet(Lampa.Modal.scroll().render());
+                                            Lampa.Controller.collectionFocus(firstEp, Lampa.Modal.scroll().render());
+                                        }
+                                    } catch (err) {}
+                                    if (e.items && e.items.length >= 1 && e.items[0] && e.items[0].url && window.AndroidJS && window.AndroidJS.prefetchHint) {
+                                        window.AndroidJS.prefetchHint(e.items[0].url);
+                                    }
+                                }, 30);
+                            } else if (e.type === 'onfocus' && e.element && e.element.url) {
                                 clearTimeout(torrentFileTimer);
                                 var u = e.element.url;
                                 torrentFileTimer = setTimeout(function() {
                                     if (window.AndroidJS && window.AndroidJS.prefetchHint) {
                                         window.AndroidJS.prefetchHint(u);
                                     }
-                                }, 400);
+                                }, 350);
                             }
                         });
                         return true;
@@ -598,7 +896,7 @@ class SysView(override val mainActivity: MainActivity, override val viewResId: I
                     if (!attachLampaHooks()) {
                         var hookPoll = setInterval(function() {
                             if (attachLampaHooks()) clearInterval(hookPoll);
-                        }, 250);
+                        }, 200);
                         setTimeout(function() { clearInterval(hookPoll); }, 10000);
                     }
 

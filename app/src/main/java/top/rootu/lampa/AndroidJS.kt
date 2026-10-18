@@ -516,7 +516,12 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
                 }
                 val http = Http(disableH2)
                 val result = try {
-                    val responseJSON = if (method == "GET" && !disableH2) {
+                    val responseJSON = if (method == "GET" && url.contains("/plugins/modification.js") && url.contains("lampa.mx")) {
+                        JSONObject().apply {
+                            putSafe("body", "")
+                            putSafe("currentUrl", url)
+                        }
+                    } else if (method == "GET" && !disableH2) {
                         val isParserQuery = PARSER_PATH_MARKERS.any { url.contains(it, ignoreCase = true) }
                         val coalesceKey = "$url|${dataType.orEmpty()}|$finalHeaders"
                         val cachedParserResp = if (isParserQuery) {
@@ -584,6 +589,9 @@ class AndroidJS(private val mainActivity: MainActivity, private val browser: Bro
     }
 
     private fun resolveRequestUrl(rawUrl: String, baseUrl: String): String {
+        if (rawUrl.startsWith("http://api.themoviedb.org", ignoreCase = true)) {
+            return "https://" + rawUrl.substring(7)
+        }
         if (rawUrl.startsWith("http://", ignoreCase = true) || rawUrl.startsWith("https://", ignoreCase = true)) {
             return rawUrl
         }
